@@ -280,7 +280,9 @@ async def run_bridge():
         return
     
     bot_id = me['id']
-    print(f"[{datetime.now()}] Connected as {me['username']} ({bot_id})")
+    bot_username = me['username']
+    bot_mention = f"@{bot_username}"
+    print(f"[{datetime.now()}] Connected as {bot_username} ({bot_id})")
     
     await goose.start()
     
@@ -300,8 +302,9 @@ async def run_bridge():
                 team_channels = api.get_my_channels(team['id']) or []
                 channels.extend(team_channels)
             
-            # De-duplicate channels
-            channel_ids = {c['id'] for c in channels}
+            # De-duplicate channels and store types
+            channel_map = {c['id']: c for c in channels}
+            channel_ids = set(channel_map.keys())
             
             new_since = last_since
             for cid in channel_ids:
@@ -311,6 +314,9 @@ async def run_bridge():
                 
                 # Sort posts by creation time
                 sorted_posts = sorted(posts_data["posts"].values(), key=lambda x: x["create_at"])
+                
+                channel = channel_map.get(cid)
+                is_dm = channel and channel.get("type") == "D"
                 
                 for post in sorted_posts:
                     if post["create_at"] <= last_since:
@@ -325,6 +331,14 @@ async def run_bridge():
                     message = post.get("message", "").strip()
                     if not message:
                         continue
+
+                    # Check if we should respond
+                    # 1. In DMs, we always respond
+                    # 2. In other channels, we only respond if mentioned
+                    is_mentioned = bot_mention in message
+                    
+                    if not is_dm and not is_mentioned:
+                        continue
                     
                     # Approved users check
                     if APPROVED_USERS:
@@ -334,6 +348,13 @@ async def run_bridge():
                             print(f"[{datetime.now()}] Ignoring message from unapproved user: {username or sender_id}")
                             continue
                     
+                    # If mentioned, we can clean up the message by removing the mention
+                    if is_mentioned:
+                        message = message.replace(bot_mention, "").strip()
+                        # Handle potential comma after mention like "@goose, hello"
+                        if message.startswith(",") or message.startswith(":"):
+                            message = message[1:].strip()
+
                     root_id = post.get("root_id") or post["id"]
                     session_key = f"{sender_id}:{root_id}"
                     
