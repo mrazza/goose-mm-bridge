@@ -19,6 +19,7 @@ MATTERMOST_SCHEME = os.getenv("MATTERMOST_SCHEME", "https")
 MATTERMOST_PORT = os.getenv("MATTERMOST_PORT", "443")
 APPROVED_USERS = [u.strip() for u in os.getenv("APPROVED_USERS", "").split(",") if u.strip()]
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "1"))
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
 class GooseACPClient:
     def __init__(self):
@@ -55,7 +56,8 @@ class GooseACPClient:
             try:
                 line_str = line.decode().strip()
                 if not line_str: continue
-                # print(f"DEBUG: GOOSE -> BRIDGE: {line_str}")
+                if DEBUG:
+                    print(f"DEBUG: GOOSE -> BRIDGE: {line_str}")
                 res = json.loads(line_str)
                 req_id = res.get("id")
                 
@@ -65,8 +67,8 @@ class GooseACPClient:
                     del self.pending_requests[req_id]
                 
                 if res.get("method") in ["session/prompt/next", "session/update"]:
-                    # Debug: Print incoming chunks
-                    # print(f"DEBUG: Received chunk: {res}")
+                    if DEBUG:
+                        print(f"DEBUG: Received chunk for session update")
                     session_id = res.get("params", {}).get("sessionId")
                     # If sessionId is not in params, use the last active session as a fallback
                     # or better, send to all queues if we can't distinguish.
@@ -80,6 +82,8 @@ class GooseACPClient:
                             await q.put(res)
             except Exception as e:
                 print(f"Error parsing Goose output: {e}")
+                if 'line' in locals():
+                    print(f"DEBUG: Failed line content: {line}")
 
     async def _read_stderr(self):
         while True:
@@ -92,7 +96,8 @@ class GooseACPClient:
                 print(f"[GOOSE-STDERR] {msg}", file=sys.stderr)
 
     async def send_request(self, method: str, params: dict = None) -> dict:
-        # print(f"DEBUG: BRIDGE -> GOOSE: {method}({params})")
+        if DEBUG:
+            print(f"DEBUG: BRIDGE -> GOOSE: {method}({params})")
         req_id = self.message_id
         self.message_id += 1
         
@@ -124,6 +129,8 @@ class GooseACPClient:
         return session_id
 
     async def prompt(self, session_id: str, text: str):
+        if DEBUG:
+            print(f"DEBUG: Starting prompt for session {session_id}")
         # Clear existing chunks
         while not self.session_queues[session_id].empty():
             self.session_queues[session_id].get_nowait()
@@ -146,6 +153,8 @@ class GooseACPClient:
                 
                 if chunk_task in done:
                     chunk = chunk_task.result()
+                    if DEBUG:
+                        print(f"DEBUG: Processing chunk for {session_id}")
                     params = chunk.get("params", {})
                     # Handle session/prompt/next format
                     if params.get("chunk", {}).get("type") == "text":
@@ -159,10 +168,14 @@ class GooseACPClient:
                     chunk_task.cancel()
 
                 if res_future in done:
+                    if DEBUG:
+                        print(f"DEBUG: session/prompt request finished for {session_id}")
                     # Final result received, but there might be more chunks in the queue
                     # Drain the queue
                     while not self.session_queues[session_id].empty():
                         chunk = await self.session_queues[session_id].get()
+                        if DEBUG:
+                            print(f"DEBUG: Draining late chunk for {session_id}")
                         if chunk.get("params", {}).get("chunk", {}).get("type") == "text":
                             full_response += chunk["params"]["chunk"]["text"]
                     break
