@@ -380,13 +380,12 @@ async def run_bridge():
                                 if GOOSE_THINKING_TRACE and thinking_trace:
                                     props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
                             
-                            # Only create/update post if it's final OR if we want to show thinking trace
-                            if update["type"] == "final" or GOOSE_THINKING_TRACE:
-                                if not thinking_post:
-                                    thinking_post = api.create_post(post["channel_id"], msg, root_id=root_id, props=props)
-                                else:
-                                    api.update_post(thinking_post["id"], msg, props=props)
-                                last_update_time = current_time
+                            # Only create/update post
+                            if not thinking_post:
+                                thinking_post = api.create_post(post["channel_id"], msg, root_id=root_id, props=props)
+                            else:
+                                api.update_post(thinking_post["id"], msg, props=props)
+                            last_update_time = current_time
             
             last_since = new_since
             await asyncio.sleep(POLL_INTERVAL)
