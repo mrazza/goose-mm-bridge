@@ -52,6 +52,7 @@ The bridge is configured via environment variables in the `.env` file:
 | `MATTERMOST_SCHEME` | `http` or `https` | `https` |
 | `MATTERMOST_PORT` | The port for your Mattermost instance | `443` |
 | `APPROVED_USERS` | Comma-separated list of usernames or user IDs allowed to use the bot | (All allowed) |
+| `POLL_INTERVAL` | The frequency (in seconds) to poll Mattermost for new messages | `1` |
 
 ## 🏃 Usage
 
