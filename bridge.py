@@ -175,6 +175,12 @@ class GooseACPClient:
                     elif session_update == "call_tool":
                         tool_call = update.get("toolCall", {})
                         yield {"type": "tool", "name": tool_call.get("name"), "arguments": tool_call.get("arguments")}
+                    elif session_update == "tool_call":
+                        yield {"type": "tool", "name": update.get("title") or "tool", "arguments": {}}
+                    elif session_update == "tool_call_update":
+                        title = update.get("title")
+                        if title:
+                            yield {"type": "thinking", "text": f"\n*Updated: {title}*\n"}
                         
                 elif not chunk_task.done():
                     chunk_task.cancel()
