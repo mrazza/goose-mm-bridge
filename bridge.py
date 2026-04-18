@@ -18,6 +18,7 @@ MATTERMOST_TOKEN = os.getenv("MATTERMOST_TOKEN")
 MATTERMOST_SCHEME = os.getenv("MATTERMOST_SCHEME", "https")
 MATTERMOST_PORT = os.getenv("MATTERMOST_PORT", "443")
 APPROVED_USERS = [u.strip() for u in os.getenv("APPROVED_USERS", "").split(",") if u.strip()]
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "1"))
 
 class GooseACPClient:
     def __init__(self):
@@ -300,7 +301,7 @@ async def run_bridge():
                         api.create_post(post["channel_id"], response, root_id=root_id)
             
             last_since = new_since
-            await asyncio.sleep(3)
+            await asyncio.sleep(POLL_INTERVAL)
             
         except KeyboardInterrupt:
             break
