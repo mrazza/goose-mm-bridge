@@ -180,7 +180,7 @@ class GooseACPClient:
                     elif session_update == "tool_call_update":
                         title = update.get("title")
                         if title:
-                            yield {"type": "thinking", "text": f"\n*Updated: {title}*\n"}
+                            yield {"type": "thinking", "text": f"\n**Updated**: `{title}`\n"}
                         
                 elif not chunk_task.done():
                     chunk_task.cancel()
@@ -194,8 +194,18 @@ class GooseACPClient:
                         chunk = await self.session_queues[session_id].get()
                         if DEBUG:
                             print(f"DEBUG: Draining late chunk for {session_id}")
-                        if chunk.get("params", {}).get("chunk", {}).get("type") == "text":
-                            full_response += chunk["params"]["chunk"]["text"]
+                        
+                        params = chunk.get("params", {})
+                        # Handle session/prompt/next
+                        if params.get("chunk", {}).get("type") == "text":
+                            full_response += params["chunk"]["text"]
+                        
+                        # Handle session/update
+                        update = params.get("update", {})
+                        if update.get("sessionUpdate") == "agent_message_chunk":
+                            content_obj = update.get("content", {})
+                            if content_obj.get("type") == "text":
+                                full_response += content_obj.get("text", "")
                     break
             except Exception as e:
                 print(f"Error in prompt loop: {e}")
@@ -247,12 +257,16 @@ class MattermostAPI:
     def get_channel_posts(self, channel_id, since):
         return self._request(f"/channels/{channel_id}/posts?since={since}")
 
-    def create_post(self, channel_id, message, root_id=None):
+    def create_post(self, channel_id, message, root_id=None, props=None):
         data = {"channel_id": channel_id, "message": message, "root_id": root_id}
+        if props:
+            data["props"] = props
         return self._request("/posts", data=data, method="POST")
 
-    def update_post(self, post_id, message):
+    def update_post(self, post_id, message, props=None):
         data = {"id": post_id, "message": message}
+        if props:
+            data["props"] = props
         return self._request(f"/posts/{post_id}", data=data, method="PUT")
 
 async def run_bridge():
@@ -338,7 +352,7 @@ async def run_bridge():
                         if update["type"] == "thinking":
                             thinking_trace += update["text"]
                         elif update["type"] == "tool":
-                            thinking_trace += f"\n\n*Using tool: **{update['name']}***\n"
+                            thinking_trace += f"\n\n**Using tool**: `{update['name']}`\n"
                         elif update["type"] == "content":
                             full_response = update["text"]
                         elif update["type"] == "final":
@@ -348,17 +362,19 @@ async def run_bridge():
                         current_time = time.time()
                         if (thinking_trace and current_time - last_update_time > 1.0) or update["type"] == "final":
                             msg = ""
+                            props = {}
                             if update["type"] != "final":
-                                msg = f":thinking_face: **Thinking...**\n\n{thinking_trace}"
-                                if full_response:
-                                    msg += f"\n\n---\n\n{full_response}"
+                                msg = f":thinking_face: **Thinking...**"
+                                props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
                             else:
                                 msg = full_response
+                                if thinking_trace:
+                                    props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
                             
                             if not thinking_post:
-                                thinking_post = api.create_post(post["channel_id"], msg, root_id=root_id)
+                                thinking_post = api.create_post(post["channel_id"], msg, root_id=root_id, props=props)
                             else:
-                                api.update_post(thinking_post["id"], msg)
+                                api.update_post(thinking_post["id"], msg, props=props)
                             last_update_time = current_time
             
             last_since = new_since
