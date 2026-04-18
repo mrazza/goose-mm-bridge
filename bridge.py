@@ -20,6 +20,7 @@ MATTERMOST_PORT = os.getenv("MATTERMOST_PORT", "443")
 APPROVED_USERS = [u.strip() for u in os.getenv("APPROVED_USERS", "").split(",") if u.strip()]
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "1"))
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+GOOSE_THINKING_TRACE = os.getenv("GOOSE_THINKING_TRACE", "true").lower() == "true"
 
 class GooseACPClient:
     def __init__(self):
@@ -360,7 +361,15 @@ async def run_bridge():
 
                         # Update thinking post periodically or if it's the final response
                         current_time = time.time()
-                        if (thinking_trace and current_time - last_update_time > 1.0) or update["type"] == "final":
+                        
+                        # Decide if we should show/update anything
+                        should_update = False
+                        if update["type"] == "final":
+                            should_update = True
+                        elif GOOSE_THINKING_TRACE and thinking_trace and current_time - last_update_time > 1.0:
+                            should_update = True
+                            
+                        if should_update:
                             msg = ""
                             props = {}
                             if update["type"] != "final":
@@ -368,14 +377,16 @@ async def run_bridge():
                                 props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
                             else:
                                 msg = full_response
-                                if thinking_trace:
+                                if GOOSE_THINKING_TRACE and thinking_trace:
                                     props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
                             
-                            if not thinking_post:
-                                thinking_post = api.create_post(post["channel_id"], msg, root_id=root_id, props=props)
-                            else:
-                                api.update_post(thinking_post["id"], msg, props=props)
-                            last_update_time = current_time
+                            # Only create/update post if it's final OR if we want to show thinking trace
+                            if update["type"] == "final" or GOOSE_THINKING_TRACE:
+                                if not thinking_post:
+                                    thinking_post = api.create_post(post["channel_id"], msg, root_id=root_id, props=props)
+                                else:
+                                    api.update_post(thinking_post["id"], msg, props=props)
+                                last_update_time = current_time
             
             last_since = new_since
             await asyncio.sleep(POLL_INTERVAL)
