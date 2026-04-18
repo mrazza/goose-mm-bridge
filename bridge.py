@@ -156,14 +156,26 @@ class GooseACPClient:
                     if DEBUG:
                         print(f"DEBUG: Processing chunk for {session_id}")
                     params = chunk.get("params", {})
+                    update = params.get("update", {})
+                    
                     # Handle session/prompt/next format
                     if params.get("chunk", {}).get("type") == "text":
                         full_response += params["chunk"]["text"]
+                        yield {"type": "content", "text": full_response}
+                    
                     # Handle session/update format
-                    elif params.get("update", {}).get("sessionUpdate") == "agent_message_chunk":
-                        content = params.get("update", {}).get("content", {})
-                        if content.get("type") == "text":
-                            full_response += content.get("text", "")
+                    session_update = update.get("sessionUpdate")
+                    if session_update == "agent_message_chunk":
+                        content_obj = update.get("content", {})
+                        if content_obj.get("type") == "text":
+                            full_response += content_obj.get("text", "")
+                            yield {"type": "content", "text": full_response}
+                    elif session_update == "agent_thinking_chunk":
+                        yield {"type": "thinking", "text": update.get("thinking", "")}
+                    elif session_update == "call_tool":
+                        tool_call = update.get("toolCall", {})
+                        yield {"type": "tool", "name": tool_call.get("name"), "arguments": tool_call.get("arguments")}
+                        
                 elif not chunk_task.done():
                     chunk_task.cancel()
 
@@ -183,7 +195,7 @@ class GooseACPClient:
                 print(f"Error in prompt loop: {e}")
                 break
         
-        return full_response
+        yield {"type": "final", "text": full_response}
 
 class MattermostAPI:
     def __init__(self):
@@ -232,6 +244,10 @@ class MattermostAPI:
     def create_post(self, channel_id, message, root_id=None):
         data = {"channel_id": channel_id, "message": message, "root_id": root_id}
         return self._request("/posts", data=data, method="POST")
+
+    def update_post(self, post_id, message):
+        data = {"id": post_id, "message": message}
+        return self._request(f"/posts/{post_id}", data=data, method="PUT")
 
 async def run_bridge():
     api = MattermostAPI()
@@ -307,11 +323,37 @@ async def run_bridge():
                     goose_sid = sessions[session_key]
                     print(f"[{datetime.now()}] User {sender_id} says: {message[:100]}...")
                     
-                    response = await goose.prompt(goose_sid, message)
-                    print(f"[{datetime.now()}] Goose responded with {len(response)} chars")
-                    if response:
-                        print(f"[{datetime.now()}] Goose replying...")
-                        api.create_post(post["channel_id"], response, root_id=root_id)
+                    thinking_post = None
+                    full_response = ""
+                    thinking_trace = ""
+                    last_update_time = 0
+                    
+                    async for update in goose.prompt(goose_sid, message):
+                        if update["type"] == "thinking":
+                            thinking_trace += update["text"]
+                        elif update["type"] == "tool":
+                            thinking_trace += f"\n\n*Using tool: **{update['name']}***\n"
+                        elif update["type"] == "content":
+                            full_response = update["text"]
+                        elif update["type"] == "final":
+                            full_response = update["text"]
+
+                        # Update thinking post periodically or if it's the final response
+                        current_time = time.time()
+                        if (thinking_trace and current_time - last_update_time > 1.0) or update["type"] == "final":
+                            msg = ""
+                            if update["type"] != "final":
+                                msg = f":thinking_face: **Thinking...**\n\n{thinking_trace}"
+                                if full_response:
+                                    msg += f"\n\n---\n\n{full_response}"
+                            else:
+                                msg = full_response
+                            
+                            if not thinking_post:
+                                thinking_post = api.create_post(post["channel_id"], msg, root_id=root_id)
+                            else:
+                                api.update_post(thinking_post["id"], msg)
+                            last_update_time = current_time
             
             last_since = new_since
             await asyncio.sleep(POLL_INTERVAL)
