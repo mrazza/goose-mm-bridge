@@ -34,3 +34,9 @@
 ## Phase 4: Testing and Validation
 1.  **Verify Isolation**: Ensure User A cannot see files created by User B.
 2.  **Verify Tool Restriction**: Ensure a "basic" user cannot call restricted tools like `shell`.
+## Phase 5: Leveraging Goose Built-ins
+1.  **Top Of Mind Context**:
+    *   Explore using the `tom` extension to inject "User: [Name]" into every turn automatically, ensuring Goose always "remembers" who it is talking to without relying on the session history alone.
+2.  **Profile Mapping**:
+    *   Instead of just listing tools, map Mattermost roles to Goose Profiles.
+    *   The bridge can read the Goose `config.yaml` to see available profiles and use their corresponding MCP configurations.
