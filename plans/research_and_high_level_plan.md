@@ -32,3 +32,8 @@ The goal is to explore and plan the segmentation of tool usage, memory, and func
 ## 5. Security Considerations
 - **Directory Traversal**: Ensure user-specific `cwd` cannot be escaped if Goose uses file tools.
 - **Token Leakage**: Ensure MCP server configurations (which might contain keys) are only shared with authorized users.
+## 6. Additional Research Findings (April 2026)
+- **Goose Profiles**: Goose supports profiles that group extensions. While the bridge currently runs a single ACP process, it could potentially start multiple ACP processes with different `GOOSE_PROFILE` env vars, or more efficiently, use the `mcpServers` parameter in `session/new`.
+- **Top Of Mind (TOM) Extension**: There is a built-in `tom` extension that injects custom context into every turn via environment variables (`GOOSE_MOIM_MESSAGE_TEXT`). This could be leveraged for user-specific context injection.
+- **Built-in Segmentation**: Goose currently lacks native multi-user segmentation. It is designed as a single-user tool, making the bridge's role in "simulating" multi-tenancy crucial.
+- **ACP Session Capabilities**: The `session/new` call is the primary extension point for isolation. Beyond `cwd` and `mcpServers`, isolation of memory (vector stores) is managed by Goose per session ID, but these sessions are usually ephemeral unless resumed.
