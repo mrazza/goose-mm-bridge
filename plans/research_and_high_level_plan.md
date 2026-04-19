@@ -37,3 +37,13 @@ The goal is to explore and plan the segmentation of tool usage, memory, and func
 - **Top Of Mind (TOM) Extension**: There is a built-in `tom` extension that injects custom context into every turn via environment variables (`GOOSE_MOIM_MESSAGE_TEXT`). This could be leveraged for user-specific context injection.
 - **Built-in Segmentation**: Goose currently lacks native multi-user segmentation. It is designed as a single-user tool, making the bridge's role in "simulating" multi-tenancy crucial.
 - **ACP Session Capabilities**: The `session/new` call is the primary extension point for isolation. Beyond `cwd` and `mcpServers`, isolation of memory (vector stores) is managed by Goose per session ID, but these sessions are usually ephemeral unless resumed.
+## 7. Understanding Goose Profiles
+Goose Profiles are named configurations that allow for the isolation and management of different agent behaviors and capabilities. 
+
+### What a Profile Contains:
+- **Extensions**: A specific list of enabled MCP servers and built-in tools. This is the primary mechanism for tool segmentation.
+- **Provider & Model**: Settings for which LLM provider (e.g., OpenAI, Google, Anthropic) and specific model to use.
+- **System Instructions**: Custom "hints" or instructions that define the agent's persona or operational constraints for that profile.
+
+### How Profiles Enable Segmentation:
+In the context of the `goose-mm-bridge`, we can define multiple profiles in the global Goose configuration (e.g., `standard`, `power-user`, `read-only`). When a Mattermost user starts a session, the bridge identifies their role and instructs Goose to use the corresponding profile. This ensures that a "standard" user only has access to a safe subset of tools, while a "power-user" might have access to `shell` or `filesystem` tools.
