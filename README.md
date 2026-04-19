@@ -53,6 +53,9 @@ The bridge is configured via environment variables in the `.env` file:
 | `MATTERMOST_PORT` | The port for your Mattermost instance | `443` |
 | `APPROVED_USERS` | Comma-separated list of usernames or user IDs allowed to use the bot | (All allowed) |
 | `POLL_INTERVAL` | The frequency (in seconds) to poll Mattermost for new messages | `1` |
+| `DEBUG` | Enable verbose logging of JSON-RPC messages | `false` |
+| `GOOSE_THINKING_TRACE` | Stream the agent's thinking process to Mattermost as attachments | `true` |
+| `RPC_TIMEOUT` | Timeout for requests to the Goose subprocess (in seconds) | `60` |
 
 ## 🏃 Usage
 
