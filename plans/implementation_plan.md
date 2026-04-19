@@ -40,3 +40,10 @@
 2.  **Profile Mapping**:
     *   Instead of just listing tools, map Mattermost roles to Goose Profiles.
     *   The bridge can read the Goose `config.yaml` to see available profiles and use their corresponding MCP configurations.
+## Phase 6: Profile-Based Segmentation
+1.  **Profile Definition**:
+    *   Create or update `~/.config/goose/profiles.yaml` with role-based profiles.
+2.  **Bridge Logic for Profile Selection**:
+    *   Map Mattermost user groups or specific IDs to these Goose profiles.
+3.  **ACP Session Initiation**:
+    *   When calling `session/new`, specify the profile to be used. (Note: If the current ACP version does not support a `profile` parameter in `session/new`, the bridge will manually inject the profile's tool list into the `mcpServers` parameter).
