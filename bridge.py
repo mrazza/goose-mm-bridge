@@ -7,7 +7,7 @@ import ssl
 import urllib.request
 import urllib.error
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -21,6 +21,7 @@ APPROVED_USERS = [u.strip() for u in os.getenv("APPROVED_USERS", "").split(",") 
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "1"))
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 GOOSE_THINKING_TRACE = os.getenv("GOOSE_THINKING_TRACE", "true").lower() == "true"
+RPC_TIMEOUT = int(os.getenv("RPC_TIMEOUT", "60"))
 
 class GooseACPClient:
     def __init__(self):
@@ -28,8 +29,24 @@ class GooseACPClient:
         self.message_id = 1
         self.pending_requests: Dict[int, asyncio.Future] = {}
         self.session_queues: Dict[str, asyncio.Queue] = {}
+        self._start_lock = asyncio.Lock()
 
-    async def start(self):
+    async def ensure_running(self):
+        async with self._start_lock:
+            if self.process is None or self.process.returncode is not None:
+                if self.process is not None:
+                    print(f"[{datetime.now()}] Goose ACP process died (code {self.process.returncode}). Restarting...")
+                    # Fail any pending requests
+                    for fut in self.pending_requests.values():
+                        if not fut.done():
+                            fut.set_exception(RuntimeError("Goose ACP process terminated"))
+                    self.pending_requests.clear()
+                    # Clear session queues as they are tied to the old process
+                    self.session_queues.clear()
+                
+                await self._start()
+
+    async def _start(self):
         print(f"[{datetime.now()}] Starting Goose ACP process...")
         self.process = await asyncio.create_subprocess_exec(
             "goose", "acp",
@@ -41,15 +58,29 @@ class GooseACPClient:
         asyncio.create_task(self._read_stderr())
         
         # Handshake
-        await self.send_request("initialize", {
-            "protocolVersion": 0,
-            "capabilities": {},
-            "clientInfo": {"name": "goose-mm-bridge", "version": "1.0.0"}
-        })
-        print(f"[{datetime.now()}] Goose ACP initialized.")
+        try:
+            # Note: we use _send_raw_request here because send_request calls ensure_running
+            await asyncio.wait_for(self._send_raw_request("initialize", {
+                "protocolVersion": 0,
+                "capabilities": {},
+                "clientInfo": {"name": "goose-mm-bridge", "version": "1.0.0"}
+            }), timeout=RPC_TIMEOUT)
+            print(f"[{datetime.now()}] Goose ACP initialized.")
+        except Exception as e:
+            print(f"[{datetime.now()}] Failed to initialize Goose ACP: {e}")
+            if self.process:
+                try:
+                    self.process.terminate()
+                except:
+                    pass
+                self.process = None
+            raise
 
     async def _read_stdout(self):
         while True:
+            if self.process is None or self.process.stdout.at_eof():
+                break
+                
             line = await self.process.stdout.readline()
             if not line:
                 break
@@ -68,37 +99,27 @@ class GooseACPClient:
                     del self.pending_requests[req_id]
                 
                 if res.get("method") in ["session/prompt/next", "session/update"]:
-                    if DEBUG:
-                        print(f"DEBUG: Received chunk for session update")
-                    session_id = res.get("params", {}).get("sessionId")
-                    # If sessionId is not in params, use the last active session as a fallback
-                    # or better, send to all queues if we can't distinguish.
-                    # For now, let's check if sessionId is there.
-                    if session_id:
-                        if session_id in self.session_queues:
-                            await self.session_queues[session_id].put(res)
-                    else:
-                        # Fallback: put in all queues or log error
-                        for q in self.session_queues.values():
-                            await q.put(res)
+                    params = res.get("params", {})
+                    session_id = params.get("sessionId")
+                    if session_id and session_id in self.session_queues:
+                        await self.session_queues[session_id].put(res)
             except Exception as e:
                 print(f"Error parsing Goose output: {e}")
-                if 'line' in locals():
-                    print(f"DEBUG: Failed line content: {line}")
+        
+        print(f"[{datetime.now()}] Goose ACP stdout closed.")
 
     async def _read_stderr(self):
         while True:
+            if self.process is None or self.process.stderr.at_eof():
+                break
             line = await self.process.stderr.readline()
             if not line:
                 break
-            # Skip noise but log important things
             msg = line.decode().strip()
             if msg:
                 print(f"[GOOSE-STDERR] {msg}", file=sys.stderr)
 
-    async def send_request(self, method: str, params: dict = None) -> dict:
-        if DEBUG:
-            print(f"DEBUG: BRIDGE -> GOOSE: {method}({params})")
+    async def _send_raw_request(self, method: str, params: dict = None) -> dict:
         req_id = self.message_id
         self.message_id += 1
         
@@ -118,6 +139,17 @@ class GooseACPClient:
         
         return await future
 
+    async def send_request(self, method: str, params: dict = None) -> dict:
+        await self.ensure_running()
+        if DEBUG:
+            print(f"DEBUG: BRIDGE -> GOOSE: {method}({params})")
+        
+        try:
+            return await asyncio.wait_for(self._send_raw_request(method, params), timeout=RPC_TIMEOUT)
+        except asyncio.TimeoutError:
+            print(f"[{datetime.now()}] Request {method} timed out after {RPC_TIMEOUT}s")
+            raise
+
     async def create_session(self) -> str:
         res = await self.send_request("session/new", {
             "cwd": os.getcwd(),
@@ -132,6 +164,11 @@ class GooseACPClient:
     async def prompt(self, session_id: str, text: str):
         if DEBUG:
             print(f"DEBUG: Starting prompt for session {session_id}")
+        
+        if session_id not in self.session_queues:
+            # Session might have been lost due to a restart
+            raise ValueError(f"Session {session_id} not found (may have been reset)")
+
         # Clear existing chunks
         while not self.session_queues[session_id].empty():
             self.session_queues[session_id].get_nowait()
@@ -144,18 +181,16 @@ class GooseACPClient:
         full_response = ""
         while True:
             try:
-                # Wait for a chunk with a timeout, or the final response
+                # Wait for a chunk or the final response
                 chunk_task = asyncio.create_task(self.session_queues[session_id].get())
                 done, pending = await asyncio.wait(
                     [chunk_task, res_future], 
-                    timeout=0.1,
+                    timeout=1.0,
                     return_when=asyncio.FIRST_COMPLETED
                 )
                 
                 if chunk_task in done:
                     chunk = chunk_task.result()
-                    if DEBUG:
-                        print(f"DEBUG: Processing chunk for {session_id}")
                     params = chunk.get("params", {})
                     update = params.get("update", {})
                     
@@ -187,10 +222,11 @@ class GooseACPClient:
                     chunk_task.cancel()
 
                 if res_future in done:
-                    if DEBUG:
-                        print(f"DEBUG: session/prompt request finished for {session_id}")
                     # Final result received, but there might be more chunks in the queue
-                    # Drain the queue
+                    res = res_future.result()
+                    if "error" in res:
+                         raise Exception(f"Goose error: {res['error']}")
+                         
                     while not self.session_queues[session_id].empty():
                         chunk = await self.session_queues[session_id].get()
                         if DEBUG:
@@ -208,9 +244,15 @@ class GooseACPClient:
                             if content_obj.get("type") == "text":
                                 full_response += content_obj.get("text", "")
                     break
+                    
+                # If neither is done, check if process is still alive
+                if self.process is None or self.process.returncode is not None:
+                    raise RuntimeError("Goose ACP process terminated during prompt")
+                    
             except Exception as e:
-                print(f"Error in prompt loop: {e}")
-                break
+                if not res_future.done():
+                    res_future.cancel()
+                raise
         
         yield {"type": "final", "text": full_response}
 
@@ -270,6 +312,84 @@ class MattermostAPI:
             data["props"] = props
         return self._request(f"/posts/{post_id}", data=data, method="PUT")
 
+async def handle_message(api: MattermostAPI, goose: GooseACPClient, post: dict, sessions: dict, session_locks: dict, bot_mention: str):
+    sender_id = post["user_id"]
+    message = post.get("message", "").strip()
+    channel_id = post["channel_id"]
+    root_id = post.get("root_id") or post["id"]
+    session_key = f"{sender_id}:{root_id}"
+
+    # Use a lock per session to ensure messages in the same thread are processed in order
+    if session_key not in session_locks:
+        session_locks[session_key] = asyncio.Lock()
+
+    async with session_locks[session_key]:
+        try:
+            if bot_mention in message:
+                message = message.replace(bot_mention, "").strip()
+                if message.startswith(",") or message.startswith(":"):
+                    message = message[1:].strip()
+
+            if session_key not in sessions:
+                print(f"[{datetime.now()}] Creating new Goose session for {session_key}")
+                sessions[session_key] = await goose.create_session()
+            
+            goose_sid = sessions[session_key]
+            print(f"[{datetime.now()}] User {sender_id} says: {message[:100]}...")
+            
+            async def run_prompt(sid, msg):
+                thinking_post = None
+                full_response = ""
+                thinking_trace = ""
+                last_update_time = 0
+                
+                async for update in goose.prompt(sid, msg):
+                    if update["type"] == "thinking":
+                        thinking_trace += update["text"]
+                    elif update["type"] == "tool":
+                        thinking_trace += f"\n\n**Using tool**: `{update['name']}`\n"
+                    elif update["type"] == "content":
+                        full_response = update["text"]
+                    elif update["type"] == "final":
+                        full_response = update["text"]
+
+                    current_time = time.time()
+                    should_update = False
+                    if update["type"] == "final":
+                        should_update = True
+                    elif GOOSE_THINKING_TRACE and thinking_trace and current_time - last_update_time > 1.0:
+                        should_update = True
+                        
+                    if should_update:
+                        resp_msg = ""
+                        props = {}
+                        if update["type"] != "final":
+                            resp_msg = f":thinking_face: **Thinking...**"
+                            props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
+                        else:
+                            resp_msg = full_response
+                            if GOOSE_THINKING_TRACE and thinking_trace:
+                                props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
+                        
+                        if not thinking_post:
+                            thinking_post = api.create_post(channel_id, resp_msg, root_id=root_id, props=props)
+                        else:
+                            api.update_post(thinking_post["id"], resp_msg, props=props)
+                        last_update_time = current_time
+
+            try:
+                await run_prompt(goose_sid, message)
+            except (ValueError, RuntimeError) as e:
+                # Session was likely lost due to a restart
+                print(f"[{datetime.now()}] Session {session_key} lost, retrying once: {e}")
+                sessions[session_key] = await goose.create_session()
+                goose_sid = sessions[session_key]
+                await run_prompt(goose_sid, message)
+
+        except Exception as e:
+            print(f"[{datetime.now()}] Error handling message for {session_key}: {e}")
+            api.create_post(channel_id, f"⚠️ Sorry, I encountered an error: {str(e)}", root_id=root_id)
+
 async def run_bridge():
     api = MattermostAPI()
     goose = GooseACPClient()
@@ -284,12 +404,12 @@ async def run_bridge():
     bot_mention = f"@{bot_username}"
     print(f"[{datetime.now()}] Connected as {bot_username} ({bot_id})")
     
-    await goose.start()
+    await goose.ensure_running()
     
     # Track sessions: key = user_id:root_id, value = goose_session_id
     sessions = {}
+    session_locks = {}
     
-    # We poll every 3 seconds
     last_since = int(time.time() * 1000)
     print(f"[{datetime.now()}] Bridge is polling for messages. Press Ctrl+C to stop.")
     
@@ -333,8 +453,6 @@ async def run_bridge():
                         continue
 
                     # Check if we should respond
-                    # 1. In DMs, we always respond
-                    # 2. In other channels, we only respond if mentioned
                     is_mentioned = bot_mention in message
                     
                     if not is_dm and not is_mentioned:
@@ -348,65 +466,8 @@ async def run_bridge():
                             print(f"[{datetime.now()}] Ignoring message from unapproved user: {username or sender_id}")
                             continue
                     
-                    # If mentioned, we can clean up the message by removing the mention
-                    if is_mentioned:
-                        message = message.replace(bot_mention, "").strip()
-                        # Handle potential comma after mention like "@goose, hello"
-                        if message.startswith(",") or message.startswith(":"):
-                            message = message[1:].strip()
-
-                    root_id = post.get("root_id") or post["id"]
-                    session_key = f"{sender_id}:{root_id}"
-                    
-                    if session_key not in sessions:
-                        print(f"[{datetime.now()}] Creating new Goose session for {session_key}")
-                        sessions[session_key] = await goose.create_session()
-                    
-                    goose_sid = sessions[session_key]
-                    print(f"[{datetime.now()}] User {sender_id} says: {message[:100]}...")
-                    
-                    thinking_post = None
-                    full_response = ""
-                    thinking_trace = ""
-                    last_update_time = 0
-                    
-                    async for update in goose.prompt(goose_sid, message):
-                        if update["type"] == "thinking":
-                            thinking_trace += update["text"]
-                        elif update["type"] == "tool":
-                            thinking_trace += f"\n\n**Using tool**: `{update['name']}`\n"
-                        elif update["type"] == "content":
-                            full_response = update["text"]
-                        elif update["type"] == "final":
-                            full_response = update["text"]
-
-                        # Update thinking post periodically or if it's the final response
-                        current_time = time.time()
-                        
-                        # Decide if we should show/update anything
-                        should_update = False
-                        if update["type"] == "final":
-                            should_update = True
-                        elif GOOSE_THINKING_TRACE and thinking_trace and current_time - last_update_time > 1.0:
-                            should_update = True
-                            
-                        if should_update:
-                            msg = ""
-                            props = {}
-                            if update["type"] != "final":
-                                msg = f":thinking_face: **Thinking...**"
-                                props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
-                            else:
-                                msg = full_response
-                                if GOOSE_THINKING_TRACE and thinking_trace:
-                                    props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
-                            
-                            # Only create/update post
-                            if not thinking_post:
-                                thinking_post = api.create_post(post["channel_id"], msg, root_id=root_id, props=props)
-                            else:
-                                api.update_post(thinking_post["id"], msg, props=props)
-                            last_update_time = current_time
+                    # Spawn task to handle message
+                    asyncio.create_task(handle_message(api, goose, post, sessions, session_locks, bot_mention))
             
             last_since = new_since
             await asyncio.sleep(POLL_INTERVAL)
