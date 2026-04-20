@@ -47,3 +47,11 @@
     *   Map Mattermost user groups or specific IDs to these Goose profiles.
 3.  **ACP Session Initiation**:
     *   When calling `session/new`, specify the profile to be used. (Note: If the current ACP version does not support a `profile` parameter in `session/new`, the bridge will manually inject the profile's tool list into the `mcpServers` parameter).
+## Phase 6: OS-Level Hardening (Optional)
+1.  **User Provisioning**:
+    *   Implement an automated script or bridge hook to create a local Linux user when a new Mattermost user is approved.
+2.  **Privileged Execution**:
+    *   Configure `sudoers` to allow the bridge user to execute `goose acp` as any user in a specific group.
+    *   Modify `GooseACPClient.start()` to wrap the execution command: `sudo -u mm_{user_id} goose acp`.
+3.  **Shared Configuration**:
+    *   Establish a read-only global Goose configuration while allowing per-user `secrets.yaml` or local overrides.
