@@ -1,33 +1,32 @@
-# Implementation Plan: OS-Native User Segmentation
+# Implementation Plan: Admin-Managed OS Segmentation
 
-## Phase 1: OS Privilege & Execution Model
-1.  **Sudoers Configuration**:
-    *   Add a rule to `/etc/sudoers.d/goose-bridge` allowing the service user to run `goose acp` as other users without a password prompt.
-2.  **ACP Client Modification**:
-    *   Update `GooseACPClient.start()` to accept a `run_as_user` parameter.
-    *   Change the execution command to: `sudo -u {run_as_user} goose acp`.
+## Phase 1: Administrative Tooling
+1.  **User Setup Script (`setup_user.sh`)**:
+    *   Script to create a system user with no login shell (`/usr/sbin/nologin`).
+    *   Create home directory and `.config/goose` directory.
+    *   Initialize Goose configuration from a template.
+    *   Set appropriate ownership and permissions.
+2.  **Sudoers Policy**:
+    *   Provide a sudoers template: `bridge_user ALL=(target_users) NOPASSWD: /usr/local/bin/goose acp`.
 
-## Phase 2: User Provisioning Engine
-1.  **Local User Management**:
-    *   Implement a module to check for/create local users (`useradd`).
-    *   Users should be created with restricted shells and no password login enabled.
-2.  **Directory Initialization**:
-    *   For each new user, populate `~/.config/goose` with a base `config.yaml` that defines their default allowed tools and model.
+## Phase 2: Bridge Configuration & Mapping
+1.  **Mapping Definition**:
+    *   Add support for a `user_mapping.json` or environment-based mapping of `MATTERMOST_USER_ID:LINUX_USERNAME`.
+2.  **User Validation**:
+    *   On startup or first message, the bridge verifies that the mapped Linux user exists and the bridge has the necessary sudo permissions.
 
-## Phase 3: Bridge Logic & Mapping
-1.  **User Mapper**:
-    *   Develop a `UserMapper` class that handles the translation of Mattermost sender IDs to Linux usernames.
-    *   Handle sanitization of usernames to comply with Linux naming conventions.
-2.  **Session Tracking**:
-    *   Ensure the bridge tracks which PID belongs to which Mattermost user/thread.
+## Phase 3: Isolated Execution
+1.  **ACP Client Update**:
+    *   Modify execution logic to wrap the Goose command: `sudo -n -u {linux_user} goose acp`.
+    *   Ensure environment variables needed for Goose are correctly passed or set in the user's environment.
 
-## Phase 4: Shared Config & Resource Control
-1.  **Template Management**:
-    *   Define a central location for the master Goose configuration.
-    *   Implement a sync mechanism to push updates to all local users when the master config changes.
-2.  **Resource Constraints**:
-    *   Apply `systemd-run` or similar wrappers to limit the CPU/Memory of user processes.
+## Phase 4: Template & Resource Management
+1.  **Configuration Templates**:
+    *   Maintain a master Goose config template that the `setup_user.sh` script uses.
+2.  **Resource Limits**:
+    *   Optionally configure `/etc/security/limits.d/` for the managed user range to prevent resource exhaustion.
 
-## Phase 5: Verification & Hardening
-1.  **Isolation Audit**: Verify that a Goose session for User A cannot read `/home/user_b/.config/goose/config.yaml`.
-2.  **Permission Test**: Ensure shell tools correctly report the current Linux UID.
+## Phase 5: Verification
+1.  **End-to-End Test**:
+    *   Verify that messages from Mattermost User A result in a process running as Linux User A.
+    *   Verify that User A cannot access files in User B's home directory even if commanded via Goose.
