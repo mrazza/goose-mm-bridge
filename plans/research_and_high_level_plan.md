@@ -47,3 +47,12 @@ Goose Profiles are named configurations that allow for the isolation and managem
 
 ### How Profiles Enable Segmentation:
 In the context of the `goose-mm-bridge`, we can define multiple profiles in the global Goose configuration (e.g., `standard`, `power-user`, `read-only`). When a Mattermost user starts a session, the bridge identifies their role and instructs Goose to use the corresponding profile. This ensures that a "standard" user only has access to a safe subset of tools, while a "power-user" might have access to `shell` or `filesystem` tools.
+### 3.4 OS-Level Isolation (Hardened)
+- **Mechanism**: For every allow-listed Mattermost user, a corresponding Linux user is created on the host. The bridge launches the `goose acp` process using `sudo -u {username}` or a similar `setuid` mechanism.
+- **Pros**: 
+    - Industry-standard isolation of files, environment variables, and processes.
+    - Simplifies permission management for local tools (e.g., shell access is naturally restricted to that user's home).
+- **Cons**:
+    - High operational overhead (requires root/sudo access for the bridge).
+    - Complex automated user management (UID/GID exhaustion, cleanup).
+    - Potential friction with Goose's own config management (shared vs. separate `.config/goose`).
