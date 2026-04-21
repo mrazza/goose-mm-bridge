@@ -30,3 +30,9 @@
 1.  **End-to-End Test**:
     *   Verify that messages from Mattermost User A result in a process running as Linux User A.
     *   Verify that User A cannot access files in User B's home directory even if commanded via Goose.
+## Phase 6: Documentation & Onboarding
+1.  **README Update**:
+    *   Update the main README to reflect the new OS-native isolation architecture.
+    *   Add instructions for administrators on how to use `setup_user.sh`.
+    *   Document the requirement for sudoers configuration and user mapping.
+    *   Include a "Security Model" section explaining how user data and tool access are isolated.
