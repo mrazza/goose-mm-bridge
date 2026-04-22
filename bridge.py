@@ -190,12 +190,14 @@ class GooseACPClient:
                 chunk_task = asyncio.create_task(self.session_queues[session_id].get())
                 done, pending = await asyncio.wait(
                     [chunk_task, res_future], 
-                    timeout=1.0,
+                    timeout=0.1,
                     return_when=asyncio.FIRST_COMPLETED
                 )
                 
                 if chunk_task in done:
                     chunk = chunk_task.result()
+                    if DEBUG:
+                        print(f"DEBUG: Chunk for {session_id}: {chunk}")
                     params = chunk.get("params", {})
                     update = params.get("update", {})
                     
@@ -227,6 +229,8 @@ class GooseACPClient:
                     chunk_task.cancel()
 
                 if res_future in done:
+                    if DEBUG:
+                        print(f"DEBUG: Final result for {session_id}")
                     # Final result received, but there might be more chunks in the queue
                     res = res_future.result()
                     if "error" in res:
@@ -395,6 +399,7 @@ async def handle_message(api: MattermostAPI, goose: GooseACPClient, post: dict, 
             except (ValueError, RuntimeError) as e:
                 # Session was likely lost due to a restart
                 print(f"[{datetime.now()}] Session {session_key} lost, retrying once: {e}")
+                await api.create_post(channel_id, "🔄 *Notice: Connection to Goose was reset. I am starting a fresh session for this thread.*", root_id=root_id)
                 sessions[session_key] = await goose.create_session()
                 goose_sid = sessions[session_key]
                 await run_prompt(goose_sid, message)
