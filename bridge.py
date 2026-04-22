@@ -22,6 +22,7 @@ POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "1"))
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 GOOSE_THINKING_TRACE = os.getenv("GOOSE_THINKING_TRACE", "true").lower() == "true"
 RPC_TIMEOUT = int(os.getenv("RPC_TIMEOUT", "60"))
+MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "100"))
 
 class GooseACPClient:
     def __init__(self):
@@ -297,32 +298,32 @@ class MattermostAPI:
             print(f"[{datetime.now()}] MM Request Error ({method} {path}): {e}")
             return None
 
-    def get_me(self):
+    async def get_me(self):
         return await self._request("/users/me")
 
-    def get_direct_channels(self):
+    async def get_direct_channels(self):
         return await self._request("/users/me/channels")
 
-    def get_my_teams(self):
+    async def get_my_teams(self):
         return await self._request("/users/me/teams")
 
-    def get_my_channels(self, team_id):
-        return self._request(f"/users/me/teams/{team_id}/channels")
+    async def get_my_channels(self, team_id):
+        return await self._request(f"/users/me/teams/{team_id}/channels")
 
-    def get_channel_posts(self, channel_id, since):
-        return self._request(f"/channels/{channel_id}/posts?since={since}")
+    async def get_channel_posts(self, channel_id, since):
+        return await self._request(f"/channels/{channel_id}/posts?since={since}")
 
-    def create_post(self, channel_id, message, root_id=None, props=None):
+    async def create_post(self, channel_id, message, root_id=None, props=None):
         data = {"channel_id": channel_id, "message": message, "root_id": root_id}
         if props:
             data["props"] = props
         return await self._request("/posts", data=data, method="POST")
 
-    def update_post(self, post_id, message, props=None):
+    async def update_post(self, post_id, message, props=None):
         data = {"id": post_id, "message": message}
         if props:
             data["props"] = props
-        return self._request(f"/posts/{post_id}", data=data, method="PUT")
+        return await self._request(f"/posts/{post_id}", data=data, method="PUT")
 
 
 def clean_message(message: str, bot_mention: str) -> str:
@@ -478,7 +479,7 @@ async def run_bridge():
                     
                     # Approved users check
                     if APPROVED_USERS:
-                        user_info = api._request(f"/users/{sender_id}")
+                        user_info = await api._request(f"/users/{sender_id}")
                         username = user_info.get("username") if user_info else None
                         if sender_id not in APPROVED_USERS and username not in APPROVED_USERS:
                             print(f"[{datetime.now()}] Ignoring message from unapproved user: {username or sender_id}")
@@ -486,14 +487,18 @@ async def run_bridge():
                     
                     # Spawn task to handle message
                     asyncio.create_task(handle_message(api, goose, post, sessions, session_locks, bot_mention))
-                    # Prune old sessions if there are too many
-    if len(sessions) > 100:
-        # Simple FIFO pruning: remove the first 20 keys
-        keys_to_remove = list(sessions.keys())[:20]
-        for k in keys_to_remove:
-            del sessions[k]
-            if k in session_locks:
-                del session_locks[k]
+
+            # Prune old sessions if there are too many
+            if len(sessions) > MAX_SESSIONS:
+                # Simple FIFO pruning: remove the first 20% of keys
+                prune_count = max(1, MAX_SESSIONS // 5)
+                keys_to_remove = list(sessions.keys())[:prune_count]
+                for k in keys_to_remove:
+                    if DEBUG:
+                        print(f"DEBUG: Pruning old session for {k}")
+                    del sessions[k]
+                    if k in session_locks:
+                        del session_locks[k]
             
             last_since = new_since
             await asyncio.sleep(POLL_INTERVAL)
