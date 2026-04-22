@@ -106,6 +106,11 @@ class GooseACPClient:
             except Exception as e:
                 print(f"Error parsing Goose output: {e}")
         
+        # Fail any remaining pending requests
+        for fut in list(self.pending_requests.values()):
+            if not fut.done():
+                fut.set_exception(RuntimeError("Goose ACP stdout closed"))
+        self.pending_requests.clear()
         print(f"[{datetime.now()}] Goose ACP stdout closed.")
 
     async def _read_stderr(self):
@@ -269,7 +274,10 @@ class MattermostAPI:
         self.ssl_context.check_hostname = False
         self.ssl_context.verify_mode = ssl.CERT_NONE
 
-    def _request(self, path, data=None, method="GET"):
+    async def _request(self, path, data=None, method="GET"):
+        return await asyncio.to_thread(self._sync_request, path, data, method)
+
+    def _sync_request(self, path, data, method):
         url = f"{self.base_url}{path}"
         body = json.dumps(data).encode() if data else None
         req = urllib.request.Request(url, data=body, headers=self.headers, method=method)
@@ -286,13 +294,13 @@ class MattermostAPI:
             return None
 
     def get_me(self):
-        return self._request("/users/me")
+        return await self._request("/users/me")
 
     def get_direct_channels(self):
-        return self._request("/users/me/channels")
+        return await self._request("/users/me/channels")
 
     def get_my_teams(self):
-        return self._request("/users/me/teams")
+        return await self._request("/users/me/teams")
 
     def get_my_channels(self, team_id):
         return self._request(f"/users/me/teams/{team_id}/channels")
@@ -304,13 +312,21 @@ class MattermostAPI:
         data = {"channel_id": channel_id, "message": message, "root_id": root_id}
         if props:
             data["props"] = props
-        return self._request("/posts", data=data, method="POST")
+        return await self._request("/posts", data=data, method="POST")
 
     def update_post(self, post_id, message, props=None):
         data = {"id": post_id, "message": message}
         if props:
             data["props"] = props
         return self._request(f"/posts/{post_id}", data=data, method="PUT")
+
+
+def clean_message(message: str, bot_mention: str) -> str:
+    if bot_mention in message:
+        message = message.replace(bot_mention, "").strip()
+        if message.startswith(",") or message.startswith(":"):
+            message = message[1:].strip()
+    return message
 
 async def handle_message(api: MattermostAPI, goose: GooseACPClient, post: dict, sessions: dict, session_locks: dict, bot_mention: str):
     sender_id = post["user_id"]
@@ -325,10 +341,7 @@ async def handle_message(api: MattermostAPI, goose: GooseACPClient, post: dict, 
 
     async with session_locks[session_key]:
         try:
-            if bot_mention in message:
-                message = message.replace(bot_mention, "").strip()
-                if message.startswith(",") or message.startswith(":"):
-                    message = message[1:].strip()
+            message = clean_message(message, bot_mention)
 
             if session_key not in sessions:
                 print(f"[{datetime.now()}] Creating new Goose session for {session_key}")
@@ -372,9 +385,9 @@ async def handle_message(api: MattermostAPI, goose: GooseACPClient, post: dict, 
                                 props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
                         
                         if not thinking_post:
-                            thinking_post = api.create_post(channel_id, resp_msg, root_id=root_id, props=props)
+                            thinking_post = await api.create_post(channel_id, resp_msg, root_id=root_id, props=props)
                         else:
-                            api.update_post(thinking_post["id"], resp_msg, props=props)
+                            await api.update_post(thinking_post["id"], resp_msg, props=props)
                         last_update_time = current_time
 
             try:
@@ -388,13 +401,13 @@ async def handle_message(api: MattermostAPI, goose: GooseACPClient, post: dict, 
 
         except Exception as e:
             print(f"[{datetime.now()}] Error handling message for {session_key}: {e}")
-            api.create_post(channel_id, f"⚠️ Sorry, I encountered an error: {str(e)}", root_id=root_id)
+            await api.create_post(channel_id, f"⚠️ Sorry, I encountered an error: {str(e)}", root_id=root_id)
 
 async def run_bridge():
     api = MattermostAPI()
     goose = GooseACPClient()
     
-    me = api.get_me()
+    me = await api.get_me()
     if not me:
         print(f"[{datetime.now()}] Failed to connect to Mattermost. Check your URL and TOKEN.")
         return
@@ -416,10 +429,10 @@ async def run_bridge():
     while True:
         try:
             # Get channels to check
-            channels = api.get_direct_channels() or []
-            teams = api.get_my_teams() or []
+            channels = await api.get_direct_channels() or []
+            teams = await api.get_my_teams() or []
             for team in teams:
-                team_channels = api.get_my_channels(team['id']) or []
+                team_channels = await api.get_my_channels(team['id']) or []
                 channels.extend(team_channels)
             
             # De-duplicate channels and store types
@@ -428,7 +441,7 @@ async def run_bridge():
             
             new_since = last_since
             for cid in channel_ids:
-                posts_data = api.get_channel_posts(cid, last_since)
+                posts_data = await api.get_channel_posts(cid, last_since)
                 if not posts_data or "posts" not in posts_data:
                     continue
                 
@@ -468,6 +481,14 @@ async def run_bridge():
                     
                     # Spawn task to handle message
                     asyncio.create_task(handle_message(api, goose, post, sessions, session_locks, bot_mention))
+                    # Prune old sessions if there are too many
+    if len(sessions) > 100:
+        # Simple FIFO pruning: remove the first 20 keys
+        keys_to_remove = list(sessions.keys())[:20]
+        for k in keys_to_remove:
+            del sessions[k]
+            if k in session_locks:
+                del session_locks[k]
             
             last_since = new_since
             await asyncio.sleep(POLL_INTERVAL)
