@@ -149,15 +149,18 @@ class GooseACPClient:
             # Ensure we clean up the future if we were cancelled (e.g. timeout)
             self.pending_requests.pop(req_id, None)
 
-    async def send_request(self, method: str, params: dict = None) -> dict:
+    async def send_request(self, method: str, params: dict = None, timeout: Optional[int] = None) -> dict:
         await self.ensure_running()
         if DEBUG:
             print(f"DEBUG: BRIDGE -> GOOSE: {method}({params})")
         
+        wait_timeout = timeout if timeout is not None else RPC_TIMEOUT
         try:
-            return await asyncio.wait_for(self._send_raw_request(method, params), timeout=RPC_TIMEOUT)
+            if wait_timeout <= 0:
+                return await self._send_raw_request(method, params)
+            return await asyncio.wait_for(self._send_raw_request(method, params), timeout=wait_timeout)
         except asyncio.TimeoutError:
-            print(f"[{datetime.now()}] Request {method} timed out after {RPC_TIMEOUT}s")
+            print(f"[{datetime.now()}] Request {method} timed out after {wait_timeout}s")
             raise
 
     async def create_session(self) -> str:
@@ -186,9 +189,10 @@ class GooseACPClient:
         res_future = asyncio.create_task(self.send_request("session/prompt", {
             "sessionId": session_id,
             "prompt": [{"type": "text", "text": text}]
-        }))
+        }, timeout=0))
         
         full_response = ""
+        last_activity = time.time()
         while True:
             try:
                 # Wait for a chunk or the final response
@@ -200,6 +204,7 @@ class GooseACPClient:
                 )
                 
                 if chunk_task in done:
+                    last_activity = time.time()
                     chunk = chunk_task.result()
                     if DEBUG:
                         print(f"DEBUG: Chunk for {session_id}: {chunk}")
@@ -229,6 +234,9 @@ class GooseACPClient:
                         title = update.get("title")
                         if title:
                             yield {"type": "thinking", "text": f"\n**Updated**: `{title}`\n"}
+                    else:
+                        if DEBUG:
+                            print(f"DEBUG: Unknown session_update type: {session_update}")
                         
                 elif not chunk_task.done():
                     chunk_task.cancel()
@@ -262,6 +270,11 @@ class GooseACPClient:
                 # If neither is done, check if process is still alive
                 if self.process is None or self.process.returncode is not None:
                     raise RuntimeError("Goose ACP process terminated during prompt")
+                
+                # Check for inactivity timeout
+                if time.time() - last_activity > RPC_TIMEOUT:
+                    print(f"[{datetime.now()}] Request session/prompt timed out after {RPC_TIMEOUT}s")
+                    raise asyncio.TimeoutError(f"Request session/prompt timed out after {RPC_TIMEOUT}s")
                     
             except Exception as e:
                 if not res_future.done():
