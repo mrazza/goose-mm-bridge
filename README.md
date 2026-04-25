@@ -95,6 +95,7 @@ The bridge is configured via environment variables in the `.env` file:
 | `DEBUG` | Enable verbose logging of JSON-RPC messages | `false` |
 | `GOOSE_THINKING_TRACE` | Stream the agent's thinking process to Mattermost as attachments | `true` |
 | `RPC_TIMEOUT` | Timeout for requests to the Goose subprocess (in seconds) | `60` |
+| `REQUIRE_USER_MAPPING` | If `true`, reject users not found in `user_mapping.json` | `false` |
 
 ## 🏃 Usage
 
