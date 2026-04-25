@@ -79,3 +79,28 @@ The bot will start polling Mattermost for new messages and respond using the Goo
 
 ---
 *Built with ❤️ for the Goose community.*
+## Security Model: OS-Native Isolation
+
+The bridge implements user segmentation by mapping Mattermost users to dedicated Linux accounts. Each user's Goose session runs in its own process under its specific UID/GID, providing:
+
+1.  **Filesystem Isolation**: The AI can only access files that the mapped Linux user has permissions for.
+2.  **Tool Isolation**: Shell commands are executed as the mapped user.
+3.  **Memory/Config Isolation**: Goose configuration and history are stored in the user's home directory (`/home/username/.config/goose`).
+
+### Admin Setup
+
+1.  **Provision Users**: Use the provided `setup_user.sh` script to create isolated Linux users:
+    ```bash
+    sudo ./setup_user.sh goose_user_1
+    ```
+
+2.  **Configure Sudoers**: Allow the bridge user to execute Goose as these managed users. See `sudoers.template` for guidance.
+
+3.  **User Mapping**: Create a `user_mapping.json` file to associate Mattermost IDs with Linux usernames:
+    ```json
+    {
+      "mattermost_user_id_1": "goose_user_1",
+      "mattermost_username_2": "goose_user_2"
+    }
+    ```
+    Set `USER_MAPPING_FILE` in your `.env` if you use a different path.

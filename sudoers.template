@@ -1,0 +1,4 @@
+# Sudoers configuration for goose-mm-bridge
+# Replace 'bridge_user' with the user running the bridge
+# Replace 'target_users' with a comma-separated list of users created with setup_user.sh
+# bridge_user ALL=(target_users) NOPASSWD: /usr/local/bin/goose acp
