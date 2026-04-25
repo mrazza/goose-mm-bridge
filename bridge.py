@@ -24,6 +24,7 @@ GOOSE_THINKING_TRACE = os.getenv("GOOSE_THINKING_TRACE", "true").lower() == "tru
 RPC_TIMEOUT = int(os.getenv("RPC_TIMEOUT", "60"))
 MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "100"))
 USER_MAPPING_FILE = os.getenv("USER_MAPPING_FILE", "user_mapping.json")
+REQUIRE_USER_MAPPING = os.getenv("REQUIRE_USER_MAPPING", "false").lower() == "true"
 
 class GooseACPClient:
     def __init__(self, linux_user: Optional[str] = None):
@@ -377,9 +378,10 @@ async def handle_message(api: MattermostAPI, goose_clients: Dict[str, GooseACPCl
 
             if session_key not in sessions:
                 print(f"[{datetime.now()}] Creating new Goose session for {session_key}")
-                sessions[session_key] = await goose.create_session()
+                sessions[session_key] = {"id": await goose.create_session(), "linux_user": linux_user}
             
-            goose_sid = sessions[session_key]
+            session_data = sessions[session_key]
+            goose_sid = session_data["id"]
             print(f"[{datetime.now()}] User {sender_id} says: {message[:100]}...")
             
             async def run_prompt(sid, msg):
@@ -432,8 +434,8 @@ async def handle_message(api: MattermostAPI, goose_clients: Dict[str, GooseACPCl
                 # Session was likely lost due to a restart
                 print(f"[{datetime.now()}] Session {session_key} lost, retrying once: {e}")
                 await api.create_post(channel_id, "🔄 *Notice: Connection to Goose was reset. I am starting a fresh session for this thread.*", root_id=root_id)
-                sessions[session_key] = await goose.create_session()
-                goose_sid = sessions[session_key]
+                sessions[session_key] = {"id": await goose.create_session(), "linux_user": linux_user}
+                goose_sid = sessions[session_key]["id"]
                 await run_prompt(goose_sid, message)
 
         except Exception as e:
@@ -532,19 +534,24 @@ async def run_bridge():
                     if not is_dm and not is_mentioned:
                         continue
                     
-                    # Approved users check
-                    linux_user = user_mapping.get(sender_id)
-                    if not linux_user:
-                        # Try lookup by username
-                        user_info = await api._request(f"/users/{sender_id}")
-                        username = user_info.get("username") if user_info else None
-                        linux_user = user_mapping.get(username)
+                                        # User Identity & Approval Check
+                    user_info = await api._request(f"/users/{sender_id}")
+                    username = user_info.get("username") if user_info else "unknown"
                     
-                    if not linux_user and APPROVED_USERS:
-                        username = (await api._request(f"/users/{sender_id}")).get("username")
+                    if APPROVED_USERS:
                         if sender_id not in APPROVED_USERS and username not in APPROVED_USERS:
-                            print(f"[{datetime.now()}] Ignoring message from unapproved user: {username or sender_id}")
+                            if DEBUG:
+                                print(f"[{datetime.now()}] Ignoring message from unapproved user: {username} ({sender_id})")
                             continue
+                    
+                    # Linux User Mapping
+                    user_mapping = load_user_mapping() # Reload to pick up changes
+                    linux_user = user_mapping.get(sender_id) or user_mapping.get(username)
+                    
+                    if REQUIRE_USER_MAPPING and not linux_user:
+                        print(f"[{datetime.now()}] Rejecting approved user {username}: No Linux user mapping and REQUIRE_USER_MAPPING=true")
+                        await api.create_post(cid, f"⚠️ Your account is approved but has no assigned OS-level isolation profile. Please contact an administrator.", root_id=post.get("root_id") or post["id"])
+                        continue
                     
                     # Spawn task to handle message
                     asyncio.create_task(handle_message(api, goose_clients, linux_user, post, sessions, session_locks, bot_mention))
@@ -555,20 +562,13 @@ async def run_bridge():
                 prune_count = max(1, MAX_SESSIONS // 5)
                 keys_to_remove = list(sessions.keys())[:prune_count]
                 for k in keys_to_remove:
-                    sid = sessions.pop(k)
+                    session_data = sessions.pop(k)
+                    sid = session_data["id"]
+                    target_linux_user = session_data["linux_user"]
                     if DEBUG:
                         print(f"DEBUG: Pruning old session for {k} ({sid})")
                     
-                    # Clean up bridge-side resources
-                    sender_id = k.split(':')[0]
-                    # We need to find which goose client has this session. 
-                    # For simplicity, we search all clients or use the mapping.
-                    target_linux_user = user_mapping.get(sender_id)
-                    if not target_linux_user:
-                        # Fallback to default client if any
-                        target_linux_user = next(iter(goose_clients.keys())) if goose_clients else None
-                    
-                    if target_linux_user and target_linux_user in goose_clients:
+                    if target_linux_user in goose_clients:
                         client = goose_clients[target_linux_user]
                         if sid in client.session_queues:
                             del client.session_queues[sid]
