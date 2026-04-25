@@ -53,7 +53,8 @@ class GooseACPClient:
             "goose", "acp",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            limit=10*1024*1024  # 10MB buffer for large JSON-RPC messages
         )
         asyncio.create_task(self._read_stdout())
         asyncio.create_task(self._read_stderr())
@@ -140,10 +141,13 @@ class GooseACPClient:
         future = loop.create_future()
         self.pending_requests[req_id] = future
         
-        self.process.stdin.write((json.dumps(request) + "\n").encode())
-        await self.process.stdin.drain()
-        
-        return await future
+        try:
+            self.process.stdin.write((json.dumps(request) + "\n").encode())
+            await self.process.stdin.drain()
+            return await future
+        finally:
+            # Ensure we clean up the future if we were cancelled (e.g. timeout)
+            self.pending_requests.pop(req_id, None)
 
     async def send_request(self, method: str, params: dict = None) -> dict:
         await self.ensure_running()
@@ -366,6 +370,10 @@ async def handle_message(api: MattermostAPI, goose: GooseACPClient, post: dict, 
                         thinking_trace += update["text"]
                     elif update["type"] == "tool":
                         thinking_trace += f"\n\n**Using tool**: `{update['name']}`\n"
+                    
+                    # Truncate thinking trace if it gets too large for Mattermost
+                    if len(thinking_trace) > 10000:
+                        thinking_trace = "... (truncated) ...\n" + thinking_trace[-8000:]
                     elif update["type"] == "content":
                         full_response = update["text"]
                     elif update["type"] == "final":
@@ -429,20 +437,32 @@ async def run_bridge():
     sessions = {}
     session_locks = {}
     
+    # Caching for Mattermost channels to reduce API load
+    channels_cache = []
+    last_cache_update = 0
+    CACHE_TTL = 60  # Update cache every 60 seconds
+    
     last_since = int(time.time() * 1000)
     print(f"[{datetime.now()}] Bridge is polling for messages. Press Ctrl+C to stop.")
     
     while True:
         try:
-            # Get channels to check
-            channels = await api.get_direct_channels() or []
-            teams = await api.get_my_teams() or []
-            for team in teams:
-                team_channels = await api.get_my_channels(team['id']) or []
-                channels.extend(team_channels)
+            current_time = time.time()
+            if not channels_cache or current_time - last_cache_update > CACHE_TTL:
+                if DEBUG:
+                    print(f"[{datetime.now()}] Updating Mattermost channels cache...")
+                # Get channels to check
+                channels = await api.get_direct_channels() or []
+                teams = await api.get_my_teams() or []
+                for team in teams:
+                    team_channels = await api.get_my_channels(team['id']) or []
+                    channels.extend(team_channels)
+                
+                # De-duplicate channels and store
+                channels_cache = list({c['id']: c for c in channels}.values())
+                last_cache_update = current_time
             
-            # De-duplicate channels and store types
-            channel_map = {c['id']: c for c in channels}
+            channel_map = {c['id']: c for c in channels_cache}
             channel_ids = set(channel_map.keys())
             
             new_since = last_since
@@ -494,11 +514,18 @@ async def run_bridge():
                 prune_count = max(1, MAX_SESSIONS // 5)
                 keys_to_remove = list(sessions.keys())[:prune_count]
                 for k in keys_to_remove:
+                    sid = sessions.pop(k)
                     if DEBUG:
-                        print(f"DEBUG: Pruning old session for {k}")
-                    del sessions[k]
+                        print(f"DEBUG: Pruning old session for {k} ({sid})")
+                    
+                    # Clean up bridge-side resources
+                    if sid in goose.session_queues:
+                        del goose.session_queues[sid]
                     if k in session_locks:
                         del session_locks[k]
+                    
+                    # Notify Goose to close the session
+                    asyncio.create_task(goose.send_request("session/close", {"sessionId": sid}))
             
             last_since = new_since
             await asyncio.sleep(POLL_INTERVAL)
