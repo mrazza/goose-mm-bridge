@@ -23,14 +23,20 @@ async def handle_message(
     post: dict,
     sessions: dict,
     session_locks: dict,
+    active_tasks: dict,
     bot_mention: str,
 ):
     """Handles an incoming message from Mattermost."""
     sender_id = post["user_id"]
     message = post.get("message", "").strip()
+                    if not message:
+                        continue
     channel_id = post["channel_id"]
     root_id = post.get("root_id") or post["id"]
     session_key = f"{sender_id}:{root_id}"
+
+    # Register this task so it can be interrupted
+    active_tasks[session_key] = asyncio.current_task()
 
     # Use a lock per session to ensure messages in the same thread are processed in order
     if session_key not in session_locks:
@@ -149,6 +155,9 @@ async def handle_message(
                 f"⚠️ Sorry, I encountered an error: {str(e)}",
                 root_id=root_id,
             )
+        finally:
+            if active_tasks.get(session_key) == asyncio.current_task():
+                del active_tasks[session_key]
 
 
 async def run_bridge():
@@ -177,6 +186,7 @@ async def run_bridge():
 
     # Track sessions: key = user_id:root_id, value = goose_session_id
     sessions = {}
+    active_tasks = {}
     session_locks = {}
 
     # Caching for Mattermost channels to reduce API load
@@ -232,9 +242,7 @@ async def run_bridge():
                         continue
 
                     message = post.get("message", "").strip()
-                    if not message:
-                        continue
-
+                    
                     # Check if we should respond
                     is_mentioned = bot_mention in message
 
@@ -243,7 +251,39 @@ async def run_bridge():
 
                     # User Identity & Approval Check
                     user_info = await api.get_user(sender_id)
+                    
                     username = user_info.get("username") if user_info else "unknown"
+
+                    # Special Command: !stop
+                    # This check happens before mention check so users can stop without mentioning
+                    if message.lower() == "!stop":
+                        root_id = post.get("root_id") or post["id"]
+                        session_key = f"{sender_id}:{root_id}"
+                        
+                        interrupted = False
+                        if session_key in sessions:
+                            print(f"[{datetime.now()}] Interruption requested for {session_key}")
+                            sid = sessions[session_key]["id"]
+                            # Reload mapping for current user
+                            user_mapping = load_user_mapping()
+                            linux_user = user_mapping.get(sender_id) or user_mapping.get(username)
+                            
+                            if linux_user and linux_user in goose_clients:
+                                await goose_clients[linux_user].cancel_prompt(sid)
+                                interrupted = True
+                        
+                        if session_key in active_tasks:
+                            active_tasks[session_key].cancel()
+                            interrupted = True
+                            
+                        if interrupted:
+                            await api.create_post(
+                                cid,
+                                "🛑 *Prompt cancelled.*",
+                                root_id=root_id,
+                            )
+                        continue
+
 
                     if APPROVED_USERS:
                         if (
@@ -282,6 +322,7 @@ async def run_bridge():
                             post,
                             sessions,
                             session_locks,
+                            active_tasks,
                             bot_mention,
                         )
                     )
