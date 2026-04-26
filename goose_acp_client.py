@@ -41,7 +41,12 @@ class GooseACPClient:
         print(f"[{datetime.now()}] Starting Goose ACP process...")
         cmd = ["goose", "acp"]
         if self.linux_user:
-            cmd = ["sudo", "-n", "-u", self.linux_user] + cmd
+            import pwd
+            try:
+                home_dir = pwd.getpwnam(self.linux_user).pw_dir
+                cmd = ["sudo", "-n", "-u", self.linux_user, "-D", home_dir] + cmd
+            except KeyError:
+                cmd = ["sudo", "-n", "-u", self.linux_user] + cmd
             
         self.process = await asyncio.create_subprocess_exec(
             *cmd,
