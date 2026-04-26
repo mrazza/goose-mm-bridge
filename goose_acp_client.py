@@ -325,6 +325,7 @@ class GooseACPClient:
         
         self.active_prompts.pop(session_id, None)
         yield {"type": "final", "text": full_response}
+
     async def cancel_prompt(self, session_id: str):
         """Cancels the currently active prompt for a session."""
         if session_id in self.active_prompts:

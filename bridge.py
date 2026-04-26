@@ -13,7 +13,7 @@ from config import (
 )
 from goose_acp_client import GooseACPClient
 from mattermost_api import MattermostAPI
-from utils import clean_message, load_user_mapping
+from utils import clean_message, load_user_mapping, get_session_key
 
 
 async def handle_message(
@@ -33,7 +33,7 @@ async def handle_message(
         return
     channel_id = post["channel_id"]
     root_id = post.get("root_id") or post["id"]
-    session_key = f"{sender_id}:{root_id}"
+    session_key = get_session_key(sender_id, root_id)
 
     # Register this task so it can be interrupted
     active_tasks[session_key] = asyncio.current_task()
@@ -253,7 +253,7 @@ async def run_bridge():
                     # This check happens before mention check so users can stop without mentioning
                     if message.lower() == "!stop":
                         root_id = post.get("root_id") or post["id"]
-                        session_key = f"{sender_id}:{root_id}"
+                        session_key = get_session_key(sender_id, root_id)
                         
                         interrupted = False
                         if session_key in sessions:
