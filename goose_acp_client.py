@@ -16,6 +16,8 @@ class GooseACPClient:
         self.message_id = 1
         self.pending_requests: Dict[int, asyncio.Future] = {}
         self.session_queues: Dict[str, asyncio.Queue] = {}
+        self.active_prompts: Dict[str, int] = {}
+        self.last_id_used = 0
         self._healthy = True
         self._start_lock = asyncio.Lock()
 
@@ -128,10 +130,12 @@ class GooseACPClient:
             if msg:
                 print(f"[GOOSE-STDERR] {msg}", file=sys.stderr)
 
-    async def _send_raw_request(self, method: str, params: dict = None) -> dict:
+    async def _send_raw_request(self, method: str, params: dict = None, req_id: int = None) -> dict:
         """Sends a JSON-RPC request to the Goose ACP process without checking health."""
-        req_id = self.message_id
-        self.message_id += 1
+        if req_id is None:
+            req_id = self.message_id
+            self.message_id += 1
+        self.last_id_used = req_id
         
         request = {
             "jsonrpc": "2.0",
@@ -152,7 +156,21 @@ class GooseACPClient:
             # Ensure we clean up the future if we were cancelled (e.g. timeout)
             self.pending_requests.pop(req_id, None)
 
-    async def send_request(self, method: str, params: dict = None, timeout: Optional[int] = None) -> dict:
+    
+    async def send_notification(self, method: str, params: dict = None):
+        """Sends a JSON-RPC notification (no ID) to the Goose ACP process."""
+        await self.ensure_running()
+        notification = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params or {}
+        }
+        if DEBUG:
+            print(f"DEBUG: BRIDGE -> GOOSE (NOTIF): {method}({params})")
+        self.process.stdin.write((json.dumps(notification) + "\n").encode())
+        await self.process.stdin.drain()
+
+    async def send_request(self, method: str, params: dict = None, timeout: Optional[int] = None, req_id: int = None) -> dict:
         """Sends a JSON-RPC request to the Goose ACP process."""
         await self.ensure_running()
         if DEBUG:
@@ -161,8 +179,8 @@ class GooseACPClient:
         wait_timeout = timeout if timeout is not None else RPC_TIMEOUT
         try:
             if wait_timeout <= 0:
-                return await self._send_raw_request(method, params)
-            return await asyncio.wait_for(self._send_raw_request(method, params), timeout=wait_timeout)
+                return await self._send_raw_request(method, params, req_id=req_id)
+            return await asyncio.wait_for(self._send_raw_request(method, params, req_id=req_id), timeout=wait_timeout)
         except asyncio.TimeoutError:
             print(f"[{datetime.now()}] Request {method} timed out after {wait_timeout}s")
             self._healthy = False
@@ -199,10 +217,13 @@ class GooseACPClient:
         while not self.session_queues[session_id].empty():
             self.session_queues[session_id].get_nowait()
             
+        prompt_id = self.message_id
+        self.message_id += 1
+        self.active_prompts[session_id] = prompt_id
         res_future = asyncio.create_task(self.send_request("session/prompt", {
             "sessionId": session_id,
             "prompt": [{"type": "text", "text": text}]
-        }, timeout=0))
+        }, timeout=0, req_id=prompt_id))
         
         full_response = ""
         last_activity = time.time()
@@ -297,8 +318,21 @@ class GooseACPClient:
                     raise asyncio.TimeoutError(f"Request session/prompt timed out after {RPC_TIMEOUT}s")
                     
             except Exception as e:
+                self.active_prompts.pop(session_id, None)
                 if not res_future.done():
                     res_future.cancel()
                 raise
         
+        self.active_prompts.pop(session_id, None)
         yield {"type": "final", "text": full_response}
+
+    async def cancel_prompt(self, session_id: str):
+        """Cancels the currently active prompt for a session."""
+        if session_id in self.active_prompts:
+            msg_id = self.active_prompts[session_id]
+            await self.send_notification("session/cancel", {
+                "sessionId": session_id,
+                "messageId": msg_id
+            })
+            return True
+        return False

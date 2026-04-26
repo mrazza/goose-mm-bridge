@@ -20,3 +20,7 @@ def load_user_mapping() -> dict:
         except Exception as e:
             print(f"[{datetime.now()}] Error loading user mapping: {e}")
     return {}
+
+def get_session_key(user_id: str, root_id: str) -> str:
+    """Returns a unique session key based on user and thread."""
+    return f"{user_id}:{root_id}"
