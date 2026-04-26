@@ -33,11 +33,12 @@ class GooseACPClient:
         self.message_id = 1
         self.pending_requests: Dict[int, asyncio.Future] = {}
         self.session_queues: Dict[str, asyncio.Queue] = {}
+        self._healthy = True
         self._start_lock = asyncio.Lock()
 
     async def ensure_running(self):
         async with self._start_lock:
-            if self.process is None or self.process.returncode is not None:
+            if self.process is None or self.process.returncode is not None or not self._healthy:
                 if self.process is not None:
                     print(f"[{datetime.now()}] Goose ACP process died (code {self.process.returncode}). Restarting...")
                     # Fail any pending requests
@@ -49,6 +50,7 @@ class GooseACPClient:
                     self.session_queues.clear()
                 
                 await self._start()
+                self._healthy = True
 
     async def _start(self):
         print(f"[{datetime.now()}] Starting Goose ACP process...")
@@ -168,6 +170,13 @@ class GooseACPClient:
             return await asyncio.wait_for(self._send_raw_request(method, params), timeout=wait_timeout)
         except asyncio.TimeoutError:
             print(f"[{datetime.now()}] Request {method} timed out after {wait_timeout}s")
+            self._healthy = False
+            if self.process and self.process.returncode is None:
+                print(f"[{datetime.now()}] Terminating unresponsive Goose ACP process...")
+                try:
+                    self.process.terminate()
+                except Exception as e:
+                    print(f"[{datetime.now()}] Error terminating process: {e}")
             raise
 
     async def create_session(self) -> str:
@@ -281,6 +290,13 @@ class GooseACPClient:
                 # Check for inactivity timeout
                 if time.time() - last_activity > RPC_TIMEOUT:
                     print(f"[{datetime.now()}] Request session/prompt timed out after {RPC_TIMEOUT}s")
+                    self._healthy = False
+                    if self.process and self.process.returncode is None:
+                        print(f"[{datetime.now()}] Terminating unresponsive Goose ACP process...")
+                        try:
+                            self.process.terminate()
+                        except Exception as e:
+                            print(f"[{datetime.now()}] Error terminating process: {e}")
                     raise asyncio.TimeoutError(f"Request session/prompt timed out after {RPC_TIMEOUT}s")
                     
             except Exception as e:
@@ -430,7 +446,7 @@ async def handle_message(api: MattermostAPI, goose_clients: Dict[str, GooseACPCl
 
             try:
                 await run_prompt(goose_sid, message)
-            except (ValueError, RuntimeError) as e:
+            except (ValueError, RuntimeError, asyncio.TimeoutError) as e:
                 # Session was likely lost due to a restart
                 print(f"[{datetime.now()}] Session {session_key} lost, retrying once: {e}")
                 await api.create_post(channel_id, "🔄 *Notice: Connection to Goose was reset. I am starting a fresh session for this thread.*", root_id=root_id)
