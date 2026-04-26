@@ -47,7 +47,8 @@ class GooseACPClient:
                 cmd = ["sudo", "-n", "-u", self.linux_user, "-D", home_dir] + cmd
             except KeyError:
                 cmd = ["sudo", "-n", "-u", self.linux_user] + cmd
-            
+
+        print(f"[{datetime.now()}] Process command line: {cmd}")
         self.process = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
