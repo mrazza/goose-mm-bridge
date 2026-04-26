@@ -7,14 +7,32 @@ A bridge that connects [Goose](https://github.com/block/goose) to [Mattermost](h
 - **Seamless Integration**: Chat with Goose as if it were another user on Mattermost.
 - **Session Management**: Maintains conversation context using Mattermost threads.
 - **Multi-user Support**: Multiple users can interact with the bot simultaneously in their own sessions.
+- **OS-Native Isolation**: Optionally map Mattermost users to dedicated Linux accounts for strict security and tool isolation.
 - **ACP Integration**: Communicates with Goose using the Agent Control Protocol (ACP).
-- **Security**: Optional user allowlisting via `APPROVED_USERS`.
+- **Thinking Transparency**: Stream the agent's thinking process to Mattermost as message attachments.
+
+## 🏗 How it Works
+
+1. **Mattermost Polling**: The bridge periodically polls the Mattermost API for new posts in channels the bot has joined.
+2. **Session Mapping**: It tracks conversations by mapping the Mattermost `user_id` and `root_id` (thread ID) to a specific Goose ACP session.
+3. **Goose ACP Subprocess**: The bridge spawns `goose acp` as a subprocess and communicates via JSON-RPC over standard input/output.
+4. **Asynchronous Handling**: Uses `asyncio` to handle concurrent messages and streaming responses from Goose.
+5. **Threaded Responses**: Replies are posted back to Mattermost as part of the original thread to maintain clean organization.
+
+## 🛡️ Security Model: OS-Native Isolation
+
+The bridge supports user segmentation by mapping Mattermost users to dedicated Linux accounts. Each user's Goose session runs in its own process under its specific UID/GID, providing:
+
+- **Filesystem Isolation**: The AI can only access files that the mapped Linux user has permissions for.
+- **Tool Isolation**: Shell commands are executed as the mapped user.
+- **Memory/Config Isolation**: Goose configuration and history are stored in the user's home directory (`/home/username/.config/goose`).
 
 ## 🛠 Prerequisites
 
 - [Goose](https://github.com/block/goose) installed and available in your PATH.
 - A Mattermost Bot account and Personal Access Token.
 - Python 3.8+
+- (Optional) `sudo` access on the host for OS-native isolation.
 
 ## 📦 Installation
 
@@ -41,6 +59,26 @@ A bridge that connects [Goose](https://github.com/block/goose) to [Mattermost](h
    # Edit .env with your Mattermost details
    ```
 
+## 🛡️ Administrative Setup (Optional Isolation)
+
+If you wish to use the OS-native isolation feature:
+
+1. **Provision Users**: Use the provided `setup_user.sh` script to create isolated Linux users:
+   ```bash
+   sudo ./setup_user.sh goose_user_1
+   ```
+
+2. **Configure Sudoers**: Allow the bridge user to execute Goose as these managed users. See `sudoers.template` for guidance.
+
+3. **User Mapping**: Create a `user_mapping.json` file to associate Mattermost IDs with Linux usernames:
+   ```json
+   {
+     "mattermost_user_id_1": "goose_user_1",
+     "mattermost_username_2": "goose_user_2"
+   }
+   ```
+   Set `USER_MAPPING_FILE` in your `.env` if you use a different path.
+
 ## ⚙️ Configuration
 
 The bridge is configured via environment variables in the `.env` file:
@@ -52,30 +90,23 @@ The bridge is configured via environment variables in the `.env` file:
 | `MATTERMOST_SCHEME` | `http` or `https` | `https` |
 | `MATTERMOST_PORT` | The port for your Mattermost instance | `443` |
 | `APPROVED_USERS` | Comma-separated list of usernames or user IDs allowed to use the bot | (All allowed) |
+| `USER_MAPPING_FILE` | Path to the JSON file mapping Mattermost users to Linux accounts | `user_mapping.json` |
 | `POLL_INTERVAL` | The frequency (in seconds) to poll Mattermost for new messages | `1` |
 | `DEBUG` | Enable verbose logging of JSON-RPC messages | `false` |
 | `GOOSE_THINKING_TRACE` | Stream the agent's thinking process to Mattermost as attachments | `true` |
 | `RPC_TIMEOUT` | Timeout for requests to the Goose subprocess (in seconds) | `60` |
+| `REQUIRE_USER_MAPPING` | If `true`, reject users not found in `user_mapping.json` | `false` |
 
 ## 🏃 Usage
 
-You can start the bridge using the provided script (if running from the parent directory) or manually:
+You can start the bridge manually:
 
 ```bash
-# Manual start
 source venv/bin/activate
 python bridge.py
 ```
 
 The bot will start polling Mattermost for new messages and respond using the Goose ACP.
-
-## 🏗 How it Works
-
-1. **Mattermost Polling**: The bridge periodically polls the Mattermost API for new posts in channels the bot has joined.
-2. **Session Mapping**: It tracks conversations by mapping the Mattermost `user_id` and `root_id` (thread ID) to a specific Goose ACP session.
-3. **Goose ACP Subprocess**: The bridge spawns `goose acp` as a subprocess and communicates via JSON-RPC over standard input/output.
-4. **Asynchronous Handling**: Uses `asyncio` to handle concurrent messages and streaming responses from Goose.
-5. **Threaded Responses**: Replies are posted back to Mattermost as part of the original thread to maintain clean organization.
 
 ---
 *Built with ❤️ for the Goose community.*

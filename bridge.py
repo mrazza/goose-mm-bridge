@@ -23,9 +23,12 @@ DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 GOOSE_THINKING_TRACE = os.getenv("GOOSE_THINKING_TRACE", "true").lower() == "true"
 RPC_TIMEOUT = int(os.getenv("RPC_TIMEOUT", "60"))
 MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "100"))
+USER_MAPPING_FILE = os.getenv("USER_MAPPING_FILE", "user_mapping.json")
+REQUIRE_USER_MAPPING = os.getenv("REQUIRE_USER_MAPPING", "false").lower() == "true"
 
 class GooseACPClient:
-    def __init__(self):
+    def __init__(self, linux_user: Optional[str] = None):
+        self.linux_user = linux_user
         self.process = None
         self.message_id = 1
         self.pending_requests: Dict[int, asyncio.Future] = {}
@@ -49,8 +52,12 @@ class GooseACPClient:
 
     async def _start(self):
         print(f"[{datetime.now()}] Starting Goose ACP process...")
+        cmd = ["goose", "acp"]
+        if self.linux_user:
+            cmd = ["sudo", "-n", "-u", self.linux_user] + cmd
+            
         self.process = await asyncio.create_subprocess_exec(
-            "goose", "acp",
+            *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -350,7 +357,7 @@ def clean_message(message: str, bot_mention: str) -> str:
             message = message[1:].strip()
     return message
 
-async def handle_message(api: MattermostAPI, goose: GooseACPClient, post: dict, sessions: dict, session_locks: dict, bot_mention: str):
+async def handle_message(api: MattermostAPI, goose_clients: Dict[str, GooseACPClient], linux_user: str, post: dict, sessions: dict, session_locks: dict, bot_mention: str):
     sender_id = post["user_id"]
     message = post.get("message", "").strip()
     channel_id = post["channel_id"]
@@ -361,15 +368,20 @@ async def handle_message(api: MattermostAPI, goose: GooseACPClient, post: dict, 
     if session_key not in session_locks:
         session_locks[session_key] = asyncio.Lock()
 
+    if linux_user not in goose_clients:
+        goose_clients[linux_user] = GooseACPClient(linux_user)
+    goose = goose_clients[linux_user]
+
     async with session_locks[session_key]:
         try:
             message = clean_message(message, bot_mention)
 
             if session_key not in sessions:
                 print(f"[{datetime.now()}] Creating new Goose session for {session_key}")
-                sessions[session_key] = await goose.create_session()
+                sessions[session_key] = {"id": await goose.create_session(), "linux_user": linux_user}
             
-            goose_sid = sessions[session_key]
+            session_data = sessions[session_key]
+            goose_sid = session_data["id"]
             print(f"[{datetime.now()}] User {sender_id} says: {message[:100]}...")
             
             async def run_prompt(sid, msg):
@@ -422,17 +434,27 @@ async def handle_message(api: MattermostAPI, goose: GooseACPClient, post: dict, 
                 # Session was likely lost due to a restart
                 print(f"[{datetime.now()}] Session {session_key} lost, retrying once: {e}")
                 await api.create_post(channel_id, "🔄 *Notice: Connection to Goose was reset. I am starting a fresh session for this thread.*", root_id=root_id)
-                sessions[session_key] = await goose.create_session()
-                goose_sid = sessions[session_key]
+                sessions[session_key] = {"id": await goose.create_session(), "linux_user": linux_user}
+                goose_sid = sessions[session_key]["id"]
                 await run_prompt(goose_sid, message)
 
         except Exception as e:
             print(f"[{datetime.now()}] Error handling message for {session_key}: {e}")
             await api.create_post(channel_id, f"⚠️ Sorry, I encountered an error: {str(e)}", root_id=root_id)
 
+def load_user_mapping():
+    if os.path.exists(USER_MAPPING_FILE):
+        try:
+            with open(USER_MAPPING_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[{datetime.now()}] Error loading user mapping: {e}")
+    return {}
+
 async def run_bridge():
     api = MattermostAPI()
-    goose = GooseACPClient()
+    # Map linux_user -> GooseACPClient
+    goose_clients: Dict[str, GooseACPClient] = {}
     
     me = await api.get_me()
     if not me:
@@ -444,7 +466,9 @@ async def run_bridge():
     bot_mention = f"@{bot_username}"
     print(f"[{datetime.now()}] Connected as {bot_username} ({bot_id})")
     
-    await goose.ensure_running()
+    user_mapping = load_user_mapping()
+    if not user_mapping:
+        print(f"[{datetime.now()}] WARNING: No user mapping found in {USER_MAPPING_FILE}. Bridge will run as current user for all requests.")
     
     # Track sessions: key = user_id:root_id, value = goose_session_id
     sessions = {}
@@ -510,16 +534,27 @@ async def run_bridge():
                     if not is_dm and not is_mentioned:
                         continue
                     
-                    # Approved users check
+                                        # User Identity & Approval Check
+                    user_info = await api._request(f"/users/{sender_id}")
+                    username = user_info.get("username") if user_info else "unknown"
+                    
                     if APPROVED_USERS:
-                        user_info = await api._request(f"/users/{sender_id}")
-                        username = user_info.get("username") if user_info else None
                         if sender_id not in APPROVED_USERS and username not in APPROVED_USERS:
-                            print(f"[{datetime.now()}] Ignoring message from unapproved user: {username or sender_id}")
+                            if DEBUG:
+                                print(f"[{datetime.now()}] Ignoring message from unapproved user: {username} ({sender_id})")
                             continue
                     
+                    # Linux User Mapping
+                    user_mapping = load_user_mapping() # Reload to pick up changes
+                    linux_user = user_mapping.get(sender_id) or user_mapping.get(username)
+                    
+                    if REQUIRE_USER_MAPPING and not linux_user:
+                        print(f"[{datetime.now()}] Rejecting approved user {username}: No Linux user mapping and REQUIRE_USER_MAPPING=true")
+                        await api.create_post(cid, f"⚠️ Your account is approved but has no assigned OS-level isolation profile. Please contact an administrator.", root_id=post.get("root_id") or post["id"])
+                        continue
+                    
                     # Spawn task to handle message
-                    asyncio.create_task(handle_message(api, goose, post, sessions, session_locks, bot_mention))
+                    asyncio.create_task(handle_message(api, goose_clients, linux_user, post, sessions, session_locks, bot_mention))
 
             # Prune old sessions if there are too many
             if len(sessions) > MAX_SESSIONS:
@@ -527,18 +562,20 @@ async def run_bridge():
                 prune_count = max(1, MAX_SESSIONS // 5)
                 keys_to_remove = list(sessions.keys())[:prune_count]
                 for k in keys_to_remove:
-                    sid = sessions.pop(k)
+                    session_data = sessions.pop(k)
+                    sid = session_data["id"]
+                    target_linux_user = session_data["linux_user"]
                     if DEBUG:
                         print(f"DEBUG: Pruning old session for {k} ({sid})")
                     
-                    # Clean up bridge-side resources
-                    if sid in goose.session_queues:
-                        del goose.session_queues[sid]
+                    if target_linux_user in goose_clients:
+                        client = goose_clients[target_linux_user]
+                        if sid in client.session_queues:
+                            del client.session_queues[sid]
+                        asyncio.create_task(client.send_request("session/close", {"sessionId": sid}))
+
                     if k in session_locks:
                         del session_locks[k]
-                    
-                    # Notify Goose to close the session
-                    asyncio.create_task(goose.send_request("session/close", {"sessionId": sid}))
             
             last_since = new_since
             await asyncio.sleep(POLL_INTERVAL)
