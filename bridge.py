@@ -29,8 +29,8 @@ async def handle_message(
     """Handles an incoming message from Mattermost."""
     sender_id = post["user_id"]
     message = post.get("message", "").strip()
-                    if not message:
-                        continue
+    if not message:
+        return
     channel_id = post["channel_id"]
     root_id = post.get("root_id") or post["id"]
     session_key = f"{sender_id}:{root_id}"
@@ -242,16 +242,11 @@ async def run_bridge():
                         continue
 
                     message = post.get("message", "").strip()
-                    
-                    # Check if we should respond
-                    is_mentioned = bot_mention in message
-
-                    if not is_dm and not is_mentioned:
+                    if not message:
                         continue
 
                     # User Identity & Approval Check
                     user_info = await api.get_user(sender_id)
-                    
                     username = user_info.get("username") if user_info else "unknown"
 
                     # Special Command: !stop
@@ -284,6 +279,11 @@ async def run_bridge():
                             )
                         continue
 
+                    # Check if we should respond
+                    is_mentioned = bot_mention in message
+
+                    if not is_dm and not is_mentioned:
+                        continue
 
                     if APPROVED_USERS:
                         if (
