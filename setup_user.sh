@@ -32,12 +32,14 @@ sudo chown -R "$TARGET_USER:$TARGET_USER" "/home/$TARGET_USER/.config"
 # 3. Configure Sudoers
 echo "Configuring sudoers for $BRIDGE_USER to run as $TARGET_USER..."
 SUDO_LINE="$BRIDGE_USER ALL=($TARGET_USER) NOPASSWD: $GOOSE_PATH acp"
+DEFAULTS_LINE="Defaults:$TARGET_USER runcwd=*"
 
 # Check if the line already exists to avoid duplicates
 if [ -f "$SUDOERS_FILE" ] && grep -qF "$SUDO_LINE" "$SUDOERS_FILE"; then
     echo "Sudoers entry already exists in $SUDOERS_FILE"
 else
     echo "$SUDO_LINE" | sudo tee -a "$SUDOERS_FILE" > /dev/null
+    echo "$DEFAULTS_LINE" | sudo tee -a "$SUDOERS_FILE" > /dev/null
     sudo chmod 0440 "$SUDOERS_FILE"
     echo "Added sudoers entry to $SUDOERS_FILE"
 fi
