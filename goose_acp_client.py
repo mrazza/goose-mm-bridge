@@ -227,8 +227,8 @@ class GooseACPClient:
         
         full_response = ""
         last_activity = time.time()
-        while True:
-            try:
+        try:
+            while True:
                 # Wait for a chunk or the final response
                 chunk_task = asyncio.create_task(self.session_queues[session_id].get())
                 done, pending = await asyncio.wait(
@@ -240,37 +240,13 @@ class GooseACPClient:
                 if chunk_task in done:
                     last_activity = time.time()
                     chunk = chunk_task.result()
-                    if DEBUG:
-                        print(f"DEBUG: Chunk for {session_id}: {chunk}")
-                    params = chunk.get("params", {})
-                    update = params.get("update", {})
-                    
-                    # Handle session/prompt/next format
-                    if params.get("chunk", {}).get("type") == "text":
-                        full_response += params["chunk"]["text"]
-                        yield {"type": "content", "text": full_response}
-                    
-                    # Handle session/update format
-                    session_update = update.get("sessionUpdate")
-                    if session_update == "agent_message_chunk":
-                        content_obj = update.get("content", {})
-                        if content_obj.get("type") == "text":
-                            full_response += content_obj.get("text", "")
+                    parsed = self._parse_update_chunk(chunk)
+                    if parsed:
+                        if parsed["type"] == "content":
+                            full_response += parsed["text"]
                             yield {"type": "content", "text": full_response}
-                    elif session_update == "agent_thinking_chunk":
-                        yield {"type": "thinking", "text": update.get("thinking", "")}
-                    elif session_update == "call_tool":
-                        tool_call = update.get("toolCall", {})
-                        yield {"type": "tool", "name": tool_call.get("name"), "arguments": tool_call.get("arguments")}
-                    elif session_update == "tool_call":
-                        yield {"type": "tool", "name": update.get("title") or "tool", "arguments": {}}
-                    elif session_update == "tool_call_update":
-                        title = update.get("title")
-                        if title:
-                            yield {"type": "thinking", "text": f"\n**Updated**: `{title}`\n"}
-                    else:
-                        if DEBUG:
-                            print(f"DEBUG: Unknown session_update type: {session_update}")
+                        else:
+                            yield parsed
                         
                 elif not chunk_task.done():
                     chunk_task.cancel()
@@ -283,22 +259,7 @@ class GooseACPClient:
                     if "error" in res:
                          raise Exception(f"Goose error: {res['error']}")
                          
-                    while not self.session_queues[session_id].empty():
-                        chunk = await self.session_queues[session_id].get()
-                        if DEBUG:
-                            print(f"DEBUG: Draining late chunk for {session_id}")
-                        
-                        params = chunk.get("params", {})
-                        # Handle session/prompt/next
-                        if params.get("chunk", {}).get("type") == "text":
-                            full_response += params["chunk"]["text"]
-                        
-                        # Handle session/update
-                        update = params.get("update", {})
-                        if update.get("sessionUpdate") == "agent_message_chunk":
-                            content_obj = update.get("content", {})
-                            if content_obj.get("type") == "text":
-                                full_response += content_obj.get("text", "")
+                    full_response = await self._drain_remaining_chunks(session_id, full_response)
                     break
                     
                 # If neither is done, check if process is still alive
@@ -317,14 +278,59 @@ class GooseACPClient:
                             print(f"[{datetime.now()}] Error terminating process: {e}")
                     raise asyncio.TimeoutError(f"Request session/prompt timed out after {RPC_TIMEOUT}s")
                     
-            except Exception as e:
-                self.active_prompts.pop(session_id, None)
-                if not res_future.done():
-                    res_future.cancel()
-                raise
+        except Exception as e:
+            if not res_future.done():
+                res_future.cancel()
+            raise
+        finally:
+            self.active_prompts.pop(session_id, None)
         
-        self.active_prompts.pop(session_id, None)
         yield {"type": "final", "text": full_response}
+
+    def _parse_update_chunk(self, chunk: dict) -> Optional[dict]:
+        """Parses a chunk from the Goose ACP and returns a unified update dictionary."""
+        if DEBUG:
+            print(f"DEBUG: Parsing chunk: {chunk}")
+        params = chunk.get("params", {})
+        update = params.get("update", {})
+        
+        # Handle session/prompt/next format
+        if params.get("chunk", {}).get("type") == "text":
+            return {"type": "content", "text": params["chunk"]["text"]}
+        
+        # Handle session/update format
+        session_update = update.get("sessionUpdate")
+        if session_update == "agent_message_chunk":
+            content_obj = update.get("content", {})
+            if content_obj.get("type") == "text":
+                return {"type": "content", "text": content_obj.get("text", "")}
+        elif session_update == "agent_thinking_chunk":
+            return {"type": "thinking", "text": update.get("thinking", "")}
+        elif session_update == "call_tool":
+            tool_call = update.get("toolCall", {})
+            return {"type": "tool", "name": tool_call.get("name"), "arguments": tool_call.get("arguments")}
+        elif session_update == "tool_call":
+            return {"type": "tool", "name": update.get("title") or "tool", "arguments": {}}
+        elif session_update == "tool_call_update":
+            title = update.get("title")
+            if title:
+                return {"type": "thinking", "text": f"\n**Updated**: `{title}`\n"}
+        
+        if DEBUG:
+            print(f"DEBUG: Unknown or unhandled chunk format: {chunk}")
+        return None
+
+    async def _drain_remaining_chunks(self, session_id: str, full_response: str) -> str:
+        """Drains any remaining chunks from the session queue after the final response."""
+        while not self.session_queues[session_id].empty():
+            chunk = await self.session_queues[session_id].get()
+            if DEBUG:
+                print(f"DEBUG: Draining late chunk for {session_id}")
+            
+            parsed = self._parse_update_chunk(chunk)
+            if parsed and parsed["type"] == "content":
+                full_response += parsed["text"]
+        return full_response
 
     async def cancel_prompt(self, session_id: str):
         """Cancels the currently active prompt for a session."""
