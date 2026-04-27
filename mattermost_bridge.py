@@ -33,6 +33,7 @@ class MattermostBridge:
         self.bot_id = None
         self.bot_username = None
         self.bot_mention = None
+        self.background_tasks = set()
 
     async def initialize(self) -> bool:
         """Initializes the bridge by connecting to Mattermost."""
@@ -131,8 +132,8 @@ class MattermostBridge:
             elif update["type"] == "tool":
                 thinking_trace += f"\n\n**Using tool**: `{update['name']}`\n"
 
-            if len(thinking_trace) > 10000:
-                thinking_trace = "... (truncated) ...\n" + thinking_trace[-8000:]
+            if len(thinking_trace) > 4000:
+                thinking_trace = "... (truncated) ...\n" + thinking_trace[-3500:]
             elif update["type"] == "content":
                 full_response = update["text"]
             elif update["type"] == "final":
@@ -267,7 +268,9 @@ class MattermostBridge:
             return
 
         # Spawn task to handle message
-        asyncio.create_task(self._handle_message(post, linux_user))
+        task = asyncio.create_task(self._handle_message(post, linux_user))
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard)
 
     async def run(self):
         """Main loop for polling Mattermost and handling messages."""
@@ -276,31 +279,47 @@ class MattermostBridge:
 
         print(f"[{datetime.now()}] Bridge is polling for messages. Press Ctrl+C to stop.")
 
-        while True:
-            try:
-                await self._update_channel_cache()
-                channel_map = {c["id"]: c for c in self.channels_cache}
-                
-                new_since = self.last_since
-                for cid in channel_map.keys():
-                    posts_data = await self.api.get_channel_posts(cid, self.last_since)
-                    if not posts_data or "posts" not in posts_data:
-                        continue
-
-                    sorted_posts = sorted(posts_data["posts"].values(), key=lambda x: x["create_at"])
-
-                    for post in sorted_posts:
-                        if post["create_at"] <= self.last_since:
+        try:
+            while True:
+                try:
+                    await self._update_channel_cache()
+                    channel_map = {c["id"]: c for c in self.channels_cache}
+                    
+                    new_since = self.last_since
+                    for cid in channel_map.keys():
+                        posts_data = await self.api.get_channel_posts(cid, self.last_since)
+                        if not posts_data or "posts" not in posts_data:
                             continue
-                        new_since = max(new_since, post["create_at"])
-                        await self._process_post(post, channel_map)
 
-                await self._prune_sessions()
-                self.last_since = new_since
-                await asyncio.sleep(POLL_INTERVAL)
+                        sorted_posts = sorted(posts_data["posts"].values(), key=lambda x: x["create_at"])
 
-            except KeyboardInterrupt:
-                break
-            except Exception as e:
-                print(f"[{datetime.now()}] Bridge Loop Error: {e}")
-                await asyncio.sleep(5)
+                        for post in sorted_posts:
+                            if post["create_at"] <= self.last_since:
+                                continue
+                            new_since = max(new_since, post["create_at"])
+                            await self._process_post(post, channel_map)
+
+                    await self._prune_sessions()
+                    self.last_since = new_since
+                    await asyncio.sleep(POLL_INTERVAL)
+
+                except Exception as e:
+                    print(f"[{datetime.now()}] Bridge Loop Error: {e}")
+                    await asyncio.sleep(5)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            print(f"[{datetime.now()}] Shutting down bridge...")
+            # Cancel all background tasks
+            for task in self.background_tasks:
+                task.cancel()
+            if self.background_tasks:
+                await asyncio.gather(*self.background_tasks, return_exceptions=True)
+            
+            # Close all goose clients
+            for client in self.goose_clients.values():
+                if client.process and client.process.returncode is None:
+                    try:
+                        client.process.terminate()
+                    except:
+                        pass
