@@ -1,7 +1,6 @@
 import json
 import os
 from datetime import datetime
-from config import USER_MAPPING_FILE
 
 def clean_message(message: str, bot_mention: str) -> str:
     """Removes the bot mention and leading punctuation from a message."""
@@ -11,11 +10,11 @@ def clean_message(message: str, bot_mention: str) -> str:
             message = message[1:].strip()
     return message
 
-def load_user_mapping() -> dict:
+def load_user_mapping(mapping_file: str) -> dict:
     """Loads the user mapping from the JSON file."""
-    if os.path.exists(USER_MAPPING_FILE):
+    if os.path.exists(mapping_file):
         try:
-            with open(USER_MAPPING_FILE, 'r') as f:
+            with open(mapping_file, 'r') as f:
                 return json.load(f)
         except Exception as e:
             print(f"[{datetime.now()}] Error loading user mapping: {e}")
