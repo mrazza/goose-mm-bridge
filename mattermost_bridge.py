@@ -16,6 +16,7 @@ from mattermost_api import MattermostAPI
 from utils import clean_message, load_user_mapping, get_session_key
 
 CACHE_TTL = 60  # Update cache every 60 seconds
+THINKING_MSG = ":thinking_face: **Thinking...**"
 
 
 class MattermostBridge:
@@ -127,7 +128,7 @@ class MattermostBridge:
         last_update_time = 0
 
         # Create an initial thinking post to show immediate feedback
-        thinking_post = await self.api.create_post(channel_id, ":thinking_face: **Thinking...**", root_id=root_id)
+        thinking_post = await self.api.create_post(channel_id, THINKING_MSG, root_id=root_id)
         last_update_time = time.time()
 
         async for update in goose.prompt(sid, msg):
@@ -147,17 +148,15 @@ class MattermostBridge:
             should_update = False
             if update["type"] == "final":
                 should_update = True
-            elif (current_time - last_update_time > 1.0):
-                # Update if we have thinking trace OR if we have content (to show streaming)
-                if (GOOSE_THINKING_TRACE and thinking_trace) or full_response:
-                    should_update = True
+            elif (current_time - last_update_time > 1.0) and ((GOOSE_THINKING_TRACE and thinking_trace) or full_response):
+                should_update = True
 
             if should_update:
                 resp_msg = ""
                 props = {}
                 if update["type"] != "final":
                     # Show content if available, otherwise "Thinking..."
-                    resp_msg = full_response or ":thinking_face: **Thinking...**"
+                    resp_msg = full_response or THINKING_MSG
                     if GOOSE_THINKING_TRACE and thinking_trace:
                         props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
                 else:
