@@ -227,6 +227,7 @@ class GooseACPClient:
         
         full_response = ""
         last_activity = time.time()
+        # Use a single try block for the entire loop to ensure cleanup in finally
         try:
             while True:
                 # Wait for a chunk or the final response
