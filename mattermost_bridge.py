@@ -126,6 +126,10 @@ class MattermostBridge:
         thinking_trace = ""
         last_update_time = 0
 
+        # Create an initial thinking post to show immediate feedback
+        thinking_post = await self.api.create_post(channel_id, ":thinking_face: **Thinking...**", root_id=root_id)
+        last_update_time = time.time()
+
         async for update in goose.prompt(sid, msg):
             if update["type"] == "thinking":
                 thinking_trace += update["text"]
@@ -143,15 +147,19 @@ class MattermostBridge:
             should_update = False
             if update["type"] == "final":
                 should_update = True
-            elif (GOOSE_THINKING_TRACE and thinking_trace and current_time - last_update_time > 1.0):
-                should_update = True
+            elif (current_time - last_update_time > 1.0):
+                # Update if we have thinking trace OR if we have content (to show streaming)
+                if (GOOSE_THINKING_TRACE and thinking_trace) or full_response:
+                    should_update = True
 
             if should_update:
                 resp_msg = ""
                 props = {}
                 if update["type"] != "final":
-                    resp_msg = ":thinking_face: **Thinking...**"
-                    props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
+                    # Show content if available, otherwise "Thinking..."
+                    resp_msg = full_response or ":thinking_face: **Thinking...**"
+                    if GOOSE_THINKING_TRACE and thinking_trace:
+                        props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
                 else:
                     resp_msg = full_response
                     if GOOSE_THINKING_TRACE and thinking_trace:
