@@ -10,9 +10,8 @@ def config():
     return Config(rpc_timeout=1)
 
 @pytest.fixture
-async def client(config):
-    client = GooseACPClient(config=config)
-    return client
+def client(config):
+    return GooseACPClient(config=config)
 
 @pytest.mark.asyncio
 async def test_ensure_running(client):
@@ -49,8 +48,7 @@ async def test_send_request(client):
         res = await client.send_request("test_method", {"param": 1})
         assert res["result"] == "success"
 
-@pytest.mark.asyncio
-async def test_parse_update_chunk(client):
+def test_parse_update_chunk(client):
     # Test content chunk
     chunk = {
         "method": "session/prompt/next",

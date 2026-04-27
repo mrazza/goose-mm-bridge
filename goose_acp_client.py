@@ -150,8 +150,7 @@ class GooseACPClient:
         self.pending_requests[req_id] = future
         
         try:
-            self.process.stdin.write((json.dumps(request) + "
-").encode())
+            self.process.stdin.write((json.dumps(request) + "\n").encode())
             await self.process.stdin.drain()
             return await future
         finally:
@@ -169,8 +168,7 @@ class GooseACPClient:
         }
         if self.config.debug:
             print(f"DEBUG: BRIDGE -> GOOSE (NOTIF): {method}({params})")
-        self.process.stdin.write((json.dumps(notification) + "
-").encode())
+        self.process.stdin.write((json.dumps(notification) + "\n").encode())
         await self.process.stdin.drain()
 
     async def send_request(self, method: str, params: dict = None, timeout: Optional[int] = None, req_id: int = None) -> dict:
