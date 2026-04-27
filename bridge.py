@@ -1,9 +1,10 @@
 import asyncio
 from mattermost_bridge import MattermostBridge
+from config import default_config
 
 
 async def run_bridge():
-    bridge = MattermostBridge()
+    bridge = MattermostBridge(config=default_config)
     await bridge.run()
 
 

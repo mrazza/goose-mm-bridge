@@ -5,13 +5,14 @@ import sys
 import time
 from datetime import datetime
 from typing import Dict, Optional, Any, AsyncGenerator
-from config import DEBUG, RPC_TIMEOUT
+from config import default_config
 
 class GooseACPClient:
     """Client for interacting with the Goose ACP process."""
 
-    def __init__(self, linux_user: Optional[str] = None):
+    def __init__(self, linux_user: Optional[str] = None, config=None):
         self.linux_user = linux_user
+        self.config = config or default_config
         self.process = None
         self.message_id = 1
         self.pending_requests: Dict[int, asyncio.Future] = {}
@@ -68,7 +69,7 @@ class GooseACPClient:
                 "protocolVersion": 0,
                 "capabilities": {},
                 "clientInfo": {"name": "goose-mm-bridge", "version": "1.0.0"}
-            }), timeout=RPC_TIMEOUT)
+            }), timeout=self.config.rpc_timeout)
             print(f"[{datetime.now()}] Goose ACP initialized.")
         except Exception as e:
             print(f"[{datetime.now()}] Failed to initialize Goose ACP: {e}")
@@ -93,7 +94,7 @@ class GooseACPClient:
             try:
                 line_str = line.decode().strip()
                 if not line_str: continue
-                if DEBUG:
+                if self.config.debug:
                     print(f"DEBUG: GOOSE -> BRIDGE: {line_str}")
                 res = json.loads(line_str)
                 req_id = res.get("id")
@@ -149,7 +150,8 @@ class GooseACPClient:
         self.pending_requests[req_id] = future
         
         try:
-            self.process.stdin.write((json.dumps(request) + "\n").encode())
+            self.process.stdin.write((json.dumps(request) + "
+").encode())
             await self.process.stdin.drain()
             return await future
         finally:
@@ -165,18 +167,19 @@ class GooseACPClient:
             "method": method,
             "params": params or {}
         }
-        if DEBUG:
+        if self.config.debug:
             print(f"DEBUG: BRIDGE -> GOOSE (NOTIF): {method}({params})")
-        self.process.stdin.write((json.dumps(notification) + "\n").encode())
+        self.process.stdin.write((json.dumps(notification) + "
+").encode())
         await self.process.stdin.drain()
 
     async def send_request(self, method: str, params: dict = None, timeout: Optional[int] = None, req_id: int = None) -> dict:
         """Sends a JSON-RPC request to the Goose ACP process."""
         await self.ensure_running()
-        if DEBUG:
+        if self.config.debug:
             print(f"DEBUG: BRIDGE -> GOOSE: {method}({params})")
         
-        wait_timeout = timeout if timeout is not None else RPC_TIMEOUT
+        wait_timeout = timeout if timeout is not None else self.config.rpc_timeout
         try:
             if wait_timeout <= 0:
                 return await self._send_raw_request(method, params, req_id=req_id)
@@ -206,7 +209,7 @@ class GooseACPClient:
 
     async def prompt(self, session_id: str, text: str) -> AsyncGenerator[Dict[str, Any], None]:
         """Sends a prompt to a session and yields updates."""
-        if DEBUG:
+        if self.config.debug:
             print(f"DEBUG: Starting prompt for session {session_id}")
         
         if session_id not in self.session_queues:
@@ -253,7 +256,7 @@ class GooseACPClient:
                     chunk_task.cancel()
 
                 if res_future in done:
-                    if DEBUG:
+                    if self.config.debug:
                         print(f"DEBUG: Final result for {session_id}")
                     # Final result received, but there might be more chunks in the queue
                     res = res_future.result()
@@ -268,8 +271,8 @@ class GooseACPClient:
                     raise RuntimeError("Goose ACP process terminated during prompt")
                 
                 # Check for inactivity timeout
-                if time.time() - last_activity > RPC_TIMEOUT:
-                    print(f"[{datetime.now()}] Request session/prompt timed out after {RPC_TIMEOUT}s")
+                if time.time() - last_activity > self.config.rpc_timeout:
+                    print(f"[{datetime.now()}] Request session/prompt timed out after {self.config.rpc_timeout}s")
                     self._healthy = False
                     if self.process and self.process.returncode is None:
                         print(f"[{datetime.now()}] Terminating unresponsive Goose ACP process...")
@@ -277,7 +280,7 @@ class GooseACPClient:
                             self.process.terminate()
                         except Exception as e:
                             print(f"[{datetime.now()}] Error terminating process: {e}")
-                    raise asyncio.TimeoutError(f"Request session/prompt timed out after {RPC_TIMEOUT}s")
+                    raise asyncio.TimeoutError(f"Request session/prompt timed out after {self.config.rpc_timeout}s")
                     
         except Exception as e:
             if not res_future.done():
@@ -290,7 +293,7 @@ class GooseACPClient:
 
     def _parse_update_chunk(self, chunk: dict) -> Optional[dict]:
         """Parses a chunk from the Goose ACP and returns a unified update dictionary."""
-        if DEBUG:
+        if self.config.debug:
             print(f"DEBUG: Parsing chunk: {chunk}")
         params = chunk.get("params", {})
         update = params.get("update", {})
@@ -317,7 +320,7 @@ class GooseACPClient:
             if title:
                 return {"type": "thinking", "text": f"\n**Updated**: `{title}`\n"}
         
-        if DEBUG:
+        if self.config.debug:
             print(f"DEBUG: Unknown or unhandled chunk format: {chunk}")
         return None
 
@@ -325,7 +328,7 @@ class GooseACPClient:
         """Drains any remaining chunks from the session queue after the final response."""
         while not self.session_queues[session_id].empty():
             chunk = await self.session_queues[session_id].get()
-            if DEBUG:
+            if self.config.debug:
                 print(f"DEBUG: Draining late chunk for {session_id}")
             
             parsed = self._parse_update_chunk(chunk)

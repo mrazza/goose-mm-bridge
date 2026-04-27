@@ -3,14 +3,7 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from config import (
-    APPROVED_USERS,
-    DEBUG,
-    GOOSE_THINKING_TRACE,
-    MAX_SESSIONS,
-    POLL_INTERVAL,
-    REQUIRE_USER_MAPPING,
-)
+from config import default_config
 from goose_acp_client import GooseACPClient
 from mattermost_api import MattermostAPI
 from utils import clean_message, load_user_mapping, get_session_key
@@ -22,8 +15,10 @@ THINKING_MSG = ":thinking_face: **Thinking...**"
 class MattermostBridge:
     """Manages the connection between Mattermost and Goose."""
 
-    def __init__(self):
-        self.api = MattermostAPI()
+    def __init__(self, api=None, config=None, goose_client_factory=None):
+        self.config = config or default_config
+        self.api = api or MattermostAPI(config=self.config)
+        self.goose_client_factory = goose_client_factory or (lambda user: GooseACPClient(user, config=self.config))
         self.goose_clients: Dict[str, GooseACPClient] = {}
         self.sessions = {}
         self.active_tasks = {}
@@ -48,7 +43,7 @@ class MattermostBridge:
         self.bot_mention = f"@{self.bot_username}"
         print(f"[{datetime.now()}] Connected as {self.bot_username} ({self.bot_id})")
 
-        user_mapping = load_user_mapping()
+        user_mapping = load_user_mapping(self.config.user_mapping_file)
         if not user_mapping:
             print(f"[{datetime.now()}] WARNING: No user mapping found. Bridge will run as current user for all requests.")
         
@@ -58,7 +53,7 @@ class MattermostBridge:
         """Updates the internal cache of Mattermost channels."""
         current_time = time.time()
         if not self.channels_cache or current_time - self.last_cache_update > CACHE_TTL:
-            if DEBUG:
+            if self.config.debug:
                 print(f"[{datetime.now()}] Updating Mattermost channels cache...")
             
             channels = await self.api.get_direct_channels() or []
@@ -81,7 +76,7 @@ class MattermostBridge:
         if session_key in self.sessions:
             print(f"[{datetime.now()}] Interruption requested for {session_key}")
             sid = self.sessions[session_key]["id"]
-            user_mapping = load_user_mapping()
+            user_mapping = load_user_mapping(self.config.user_mapping_file)
             user_info = await self.api.get_user(sender_id)
             username = user_info.get("username") if user_info else "unknown"
             linux_user = user_mapping.get(sender_id) or user_mapping.get(username)
@@ -99,16 +94,16 @@ class MattermostBridge:
 
     async def _prune_sessions(self):
         """Prunes old sessions if the count exceeds MAX_SESSIONS."""
-        if len(self.sessions) <= MAX_SESSIONS:
+        if len(self.sessions) <= self.config.max_sessions:
             return
 
-        prune_count = max(1, MAX_SESSIONS // 5)
+        prune_count = max(1, self.config.max_sessions // 5)
         keys_to_remove = list(self.sessions.keys())[:prune_count]
         for k in keys_to_remove:
             session_data = self.sessions.pop(k)
             sid = session_data["id"]
             target_linux_user = session_data["linux_user"]
-            if DEBUG:
+            if self.config.debug:
                 print(f"DEBUG: Pruning old session for {k} ({sid})")
 
             if target_linux_user in self.goose_clients:
@@ -148,7 +143,7 @@ class MattermostBridge:
             should_update = False
             if update["type"] == "final":
                 should_update = True
-            elif (current_time - last_update_time > 1.0) and ((GOOSE_THINKING_TRACE and thinking_trace) or full_response):
+            elif (current_time - last_update_time > 1.0) and ((self.config.goose_thinking_trace and thinking_trace) or full_response):
                 should_update = True
 
             if should_update:
@@ -157,11 +152,11 @@ class MattermostBridge:
                 if update["type"] != "final":
                     # Show content if available, otherwise "Thinking..."
                     resp_msg = full_response or THINKING_MSG
-                    if GOOSE_THINKING_TRACE and thinking_trace:
+                    if self.config.goose_thinking_trace and thinking_trace:
                         props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
                 else:
                     resp_msg = full_response
-                    if GOOSE_THINKING_TRACE and thinking_trace:
+                    if self.config.goose_thinking_trace and thinking_trace:
                         props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
 
                 if not thinking_post:
@@ -187,7 +182,7 @@ class MattermostBridge:
             self.session_locks[session_key] = asyncio.Lock()
 
         if linux_user not in self.goose_clients:
-            self.goose_clients[linux_user] = GooseACPClient(linux_user)
+            self.goose_clients[linux_user] = self.goose_client_factory(linux_user)
         goose = self.goose_clients[linux_user]
 
         async with self.session_locks[session_key]:
@@ -255,17 +250,17 @@ class MattermostBridge:
         user_info = await self.api.get_user(sender_id)
         username = user_info.get("username") if user_info else "unknown"
 
-        if APPROVED_USERS:
-            if sender_id not in APPROVED_USERS and username not in APPROVED_USERS:
-                if DEBUG:
+        if self.config.approved_users:
+            if sender_id not in self.config.approved_users and username not in self.config.approved_users:
+                if self.config.debug:
                     print(f"[{datetime.now()}] Ignoring message from unapproved user: {username} ({sender_id})")
                 return
 
         # Linux User Mapping
-        user_mapping = load_user_mapping()
+        user_mapping = load_user_mapping(self.config.user_mapping_file)
         linux_user = user_mapping.get(sender_id) or user_mapping.get(username)
 
-        if REQUIRE_USER_MAPPING and not linux_user:
+        if self.config.require_user_mapping and not linux_user:
             print(f"[{datetime.now()}] Rejecting approved user {username}: No Linux user mapping and REQUIRE_USER_MAPPING=true")
             await self.api.create_post(
                 cid,
@@ -308,7 +303,7 @@ class MattermostBridge:
 
                     await self._prune_sessions()
                     self.last_since = new_since
-                    await asyncio.sleep(POLL_INTERVAL)
+                    await asyncio.sleep(self.config.poll_interval)
 
                 except Exception as e:
                     print(f"[{datetime.now()}] Bridge Loop Error: {e}")

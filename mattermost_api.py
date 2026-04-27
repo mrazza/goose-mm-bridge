@@ -5,14 +5,15 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 from typing import Optional, Dict, Any
-from config import MATTERMOST_URL, MATTERMOST_TOKEN, MATTERMOST_SCHEME, MATTERMOST_PORT
+from config import default_config
 
 class MattermostAPI:
     """Client for interacting with the Mattermost API."""
 
-    def __init__(self):
-        self.base_url = f"{MATTERMOST_SCHEME}://{MATTERMOST_URL}:{MATTERMOST_PORT}/api/v4"
-        self.token = MATTERMOST_TOKEN
+    def __init__(self, config=None):
+        self.config = config or default_config
+        self.base_url = f"{self.config.mattermost_scheme}://{self.config.mattermost_url}:{self.config.mattermost_port}/api/v4"
+        self.token = self.config.mattermost_token
         self.headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json"
