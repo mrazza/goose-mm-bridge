@@ -1,2 +1,5 @@
 mattermostdriver
 python-dotenv
+pytest
+pytest-asyncio
+pytest-mock
