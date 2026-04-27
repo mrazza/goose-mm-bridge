@@ -10,6 +10,7 @@ A bridge that connects [Goose](https://github.com/block/goose) to [Mattermost](h
 - **OS-Native Isolation**: Optionally map Mattermost users to dedicated Linux accounts for strict security and tool isolation.
 - **ACP Integration**: Communicates with Goose using the Agent Control Protocol (ACP).
 - **Thinking Transparency**: Stream the agent's thinking process to Mattermost as message attachments.
+- **Interactive Commands**: Use commands like `!stop` to interrupt the agent mid-response.
 
 ## 🏗 How it Works
 
@@ -96,6 +97,14 @@ The bridge is configured via environment variables in the `.env` file:
 | `GOOSE_THINKING_TRACE` | Stream the agent's thinking process to Mattermost as attachments | `true` |
 | `RPC_TIMEOUT` | Timeout for requests to the Goose subprocess (in seconds) | `600` |
 | `REQUIRE_USER_MAPPING` | If `true`, reject users not found in `user_mapping.json` | `false` |
+| `MAX_SESSIONS` | Maximum number of concurrent sessions to track before pruning old ones | `100` |
+
+
+## 🎮 Commands
+
+The bridge supports specific commands that can be typed directly into the Mattermost chat:
+
+- **`!stop`**: Immediately cancels the active prompt in the current thread. This is useful if the agent is stuck in a loop or performing a long-running task you wish to terminate.
 
 ## 🏃 Usage
 
