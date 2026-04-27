@@ -132,8 +132,8 @@ class MattermostBridge:
             elif update["type"] == "tool":
                 thinking_trace += f"\n\n**Using tool**: `{update['name']}`\n"
 
-            if len(thinking_trace) > 4000:
-                thinking_trace = "... (truncated) ...\n" + thinking_trace[-3500:]
+            if len(thinking_trace) > 10000:
+                thinking_trace = "... (truncated) ...\n" + thinking_trace[-8000:]
             elif update["type"] == "content":
                 full_response = update["text"]
             elif update["type"] == "final":
