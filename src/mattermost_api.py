@@ -4,7 +4,7 @@ import ssl
 import urllib.request
 import urllib.error
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from config import default_config
 
 class MattermostAPI:
