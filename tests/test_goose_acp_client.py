@@ -113,6 +113,7 @@ async def test_process_death_during_prompt(client):
     # The loop should check this and raise RuntimeError
     with pytest.raises(RuntimeError, match="Goose ACP process terminated during prompt"):
         await task
+
 @pytest.mark.asyncio
 async def test_rpc_timeout(client):
     mock_process = MagicMock()

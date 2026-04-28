@@ -35,6 +35,7 @@ async def test_create_post(api):
         req = args[0]
         assert req.get_full_url() == "https://example.com:443/api/v4/posts"
         assert req.get_method() == "POST"
+
 @pytest.mark.asyncio
 async def test_api_http_error(api):
     with patch('urllib.request.urlopen') as mock_url:
