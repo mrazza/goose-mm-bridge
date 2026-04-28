@@ -105,6 +105,7 @@ async def test_handle_stop_command(config, mock_api, mock_goose_client):
         assert mock_goose_client.cancel_prompt.called
         assert mock_api.create_post.called
         assert "cancelled" in mock_api.create_post.call_args[0][1]
+
 @pytest.mark.asyncio
 async def test_ignore_own_messages(config, mock_api):
     bridge = MattermostBridge(api=mock_api, config=config)
