@@ -324,6 +324,8 @@ class GooseACPClient:
 
     async def _drain_remaining_chunks(self, session_id: str, full_response: str) -> str:
         """Drains any remaining chunks from the session queue after the final response."""
+        if session_id not in self.session_queues:
+            return full_response
         while not self.session_queues[session_id].empty():
             chunk = await self.session_queues[session_id].get()
             if self.config.debug:

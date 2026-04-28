@@ -63,3 +63,45 @@ async def test_handle_message(config, mock_api, mock_goose_client):
         assert mock_api.create_post.called
         # First post is "Thinking..."
         assert mock_api.create_post.call_args_list[0][0][1] == ":thinking_face: **Thinking...**"
+
+@pytest.mark.asyncio
+async def test_session_pruning(config, mock_api, mock_goose_client):
+    config.max_sessions = 2
+    mock_goose_client.send_request = AsyncMock(return_value={})
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    
+    # Fill sessions
+    bridge.sessions = {
+        "user:thread1": {"id": "s1", "linux_user": "u1"},
+        "user:thread2": {"id": "s2", "linux_user": "u1"},
+        "user:thread3": {"id": "s3", "linux_user": "u1"}
+    }
+    bridge.goose_clients["u1"] = mock_goose_client
+    
+    await bridge._prune_sessions()
+    
+    # Should have pruned (max_sessions // 5) = 0, but max(1, ...) = 1
+    assert len(bridge.sessions) == 2
+    assert "user:thread1" not in bridge.sessions
+    assert mock_goose_client.send_request.called
+
+@pytest.mark.asyncio
+async def test_handle_stop_command(config, mock_api, mock_goose_client):
+    mock_goose_client.cancel_prompt = AsyncMock(return_value=True)
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    bridge.sessions["user_id_1:root_1"] = {"id": "session_1", "linux_user": "linux_user"}
+    bridge.goose_clients["linux_user"] = mock_goose_client
+    
+    post = {
+        "id": "post_1",
+        "user_id": "user_id_1",
+        "channel_id": "channel_1",
+        "root_id": "root_1",
+        "message": "!stop"
+    }
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"user_id_1": "linux_user"}):
+        await bridge._handle_stop_command(post)
+        assert mock_goose_client.cancel_prompt.called
+        assert mock_api.create_post.called
+        assert "cancelled" in mock_api.create_post.call_args[0][1]
