@@ -82,3 +82,34 @@ async def test_parse_update_chunk(client):
     parsed = client._parse_update_chunk(chunk)
     assert parsed["type"] == "tool"
     assert parsed["name"] == "test_tool"
+
+@pytest.mark.asyncio
+async def test_process_death_during_prompt(client):
+    mock_process = MagicMock()
+    mock_process.returncode = None
+    client.process = mock_process
+    client.session_queues["session_1"] = asyncio.Queue()
+    
+    # Mock send_request to return a future that won't complete immediately
+    prompt_done_future = asyncio.Future()
+    
+    async def mock_send_request(*args, **kwargs):
+        return await prompt_done_future
+        
+    client.send_request = mock_send_request
+    
+    async def run_prompt():
+        async for _ in client.prompt("session_1", "hello"):
+            pass
+            
+    task = asyncio.create_task(run_prompt())
+    
+    # Give it a moment to enter the loop
+    await asyncio.sleep(0.05)
+    
+    # Now kill the process
+    mock_process.returncode = 1
+    
+    # The loop should check this and raise RuntimeError
+    with pytest.raises(RuntimeError, match="Goose ACP process terminated during prompt"):
+        await task
