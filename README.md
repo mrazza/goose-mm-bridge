@@ -112,7 +112,7 @@ You can start the bridge manually:
 
 ```bash
 source venv/bin/activate
-python bridge.py
+python src/bridge.py
 ```
 
 The bot will start polling Mattermost for new messages and respond using the Goose ACP.
