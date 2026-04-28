@@ -181,3 +181,22 @@ async def test_drain_missing_session(client):
     # Verify the fix for KeyError when session is gone
     res = await client._drain_remaining_chunks("missing", "test")
     assert res == "test"
+@pytest.mark.asyncio
+async def test_create_session_with_mcp(config):
+    client = GooseACPClient(config=config)
+    client.process = MagicMock()
+    client.process.stdin = MagicMock()
+    client.process.stdin.write = MagicMock()
+    client.process.stdin.drain = AsyncMock()
+    
+    mcp_config = {"test": {"command": "echo"}}
+    
+    with patch.object(client, 'send_request', new_callable=AsyncMock) as mock_send:
+        mock_send.return_value = {"result": {"sessionId": "s1"}}
+        client.session_queues["s1"] = asyncio.Queue()
+        
+        sid = await client.create_session(mcp_servers=mcp_config)
+        assert sid == "s1"
+        mock_send.assert_called_once()
+        args, _ = mock_send.call_args
+        assert args[1]["mcpServers"] == mcp_config

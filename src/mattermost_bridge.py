@@ -1,8 +1,11 @@
 import asyncio
 import time
+import secrets
+import os
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from aiohttp import web
 from config import default_config
 from goose_acp_client import GooseACPClient
 from mattermost_api import MattermostAPI
@@ -30,6 +33,8 @@ class MattermostBridge:
         self.bot_username = None
         self.bot_mention = None
         self.background_tasks = set()
+        self.bridge_tokens: Dict[str, str] = {}  # session_key -> token
+        self.session_primary_users: Dict[str, dict] = {}  # session_key -> user_info
 
     async def initialize(self) -> bool:
         """Initializes the bridge by connecting to Mattermost."""
@@ -64,6 +69,82 @@ class MattermostBridge:
 
             self.channels_cache = list({c["id"]: c for c in channels}.values())
             self.last_cache_update = current_time
+
+    async def _handle_tool_call(self, request):
+        """Handles a tool call from the MCP proxy."""
+        auth_token = request.headers.get("X-Bridge-Token")
+        if not auth_token:
+            return web.json_response({"error": "Missing token"}, status=401)
+
+        try:
+            data = await request.json()
+            session_key = data.get("session_key")
+            tool = data.get("tool")
+            args = data.get("arguments", {})
+
+            if self.bridge_tokens.get(session_key) != auth_token:
+                return web.json_response({"error": "Invalid token"}, status=403)
+
+            # Map tool calls to API actions
+            result = None
+            if tool == "get_thread_context":
+                posts = await self.api.get_thread(args["post_id"])
+                if posts and "posts" in posts:
+                    # Sort and format with usernames
+                    sorted_posts = sorted(posts["posts"].values(), key=lambda x: x["create_at"])
+                    formatted = []
+                    for p in sorted_posts:
+                        u = await self.api.get_user(p["user_id"])
+                        uname = u.get("username", "unknown") if u else "unknown"
+                        formatted.append(f"[@{uname}]: {p['message']}")
+                    result = formatted
+                else:
+                    result = "Thread not found or empty."
+
+            elif tool == "search_messages":
+                res = await self.api.search_posts(args["terms"])
+                if res and "posts" in res:
+                    formatted = []
+                    for p in res["posts"].values():
+                        u = await self.api.get_user(p["user_id"])
+                        uname = u.get("username", "unknown") if u else "unknown"
+                        formatted.append(f"[@{uname}] in channel {p['channel_id']}: {p['message']}")
+                    result = formatted
+                else:
+                    result = "No messages found."
+
+            elif tool == "list_channels":
+                result = await self.api.get_direct_channels() # Simplified for now
+
+            elif tool == "search_users":
+                result = await self.api.search_users(args["term"])
+
+            elif tool == "get_user_info":
+                result = await self.api.get_user(args["user_id"])
+
+            elif tool == "send_message":
+                result = await self.api.create_post(args["channel_id"], args["message"], root_id=args.get("root_id"))
+
+            elif tool == "send_direct_message":
+                channel = await self.api.create_direct_channel(args["user_ids"])
+                if channel:
+                    result = await self.api.create_post(channel["id"], args["message"])
+                else:
+                    result = {"error": "Could not create DM channel"}
+
+            return web.json_response({"result": result})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _start_bridge_api(self):
+        """Starts the internal bridge API."""
+        app = web.Application()
+        app.router.add_post("/tool", self._handle_tool_call)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, self.config.bridge_api_host, self.config.bridge_api_port)
+        await site.start()
+        print(f"[{datetime.now()}] Bridge API listening on {self.config.bridge_api_host}:{self.config.bridge_api_port}")
 
     async def _handle_stop_command(self, post: dict):
         """Handles the !stop command to cancel active prompts."""
@@ -191,10 +272,45 @@ class MattermostBridge:
 
                 if session_key not in self.sessions:
                     print(f"[{datetime.now()}] Creating new Goose session for {session_key}")
+                    
+                    # Generate bridge token and gather primary user info
+                    token = secrets.token_urlsafe(32)
+                    self.bridge_tokens[session_key] = token
+                    user_info = await self.api.get_user(sender_id)
+                    self.session_primary_users[session_key] = user_info
+                    username = user_info.get("username", "unknown") if user_info else "unknown"
+
+                    # Construct MCP configuration
+                    mcp_config = {
+                        "mattermost": {
+                            "command": "python3",
+                            "args": [os.path.abspath("src/mm_mcp_server.py")],
+                            "env": {
+                                "BRIDGE_API_URL": f"http://{self.config.bridge_api_host}:{self.config.bridge_api_port}",
+                                "BRIDGE_SESSION_TOKEN": token,
+                                "SESSION_KEY": session_key,
+                                "PRIMARY_USER_ID": sender_id
+                            }
+                        }
+                    }
+
+                    # Add identity-aware system prompt
+                    system_prompt = f"You are interacting via a Mattermost bridge. Your primary user is @{username} (ID: {sender_id}). " \
+                                   f"While you automatically receive messages directed at you, use 'get_thread_context' " \
+                                   f"to see the full discussion between other participants in this thread/channel."
+                    
+                    # Note: We'll need to modify goose_acp_client to support initial system prompts if possible,
+                    # but for now we'll focus on the MCP config.
+                    
                     self.sessions[session_key] = {
-                        "id": await goose.create_session(),
+                        "id": await goose.create_session(mcp_servers=mcp_config),
                         "linux_user": linux_user,
                     }
+                    
+                    # Inject initial system prompt as a prompt if the session is new
+                    # Actually, the best way is usually to send it as the first message or configure it.
+                    # For simplicity, we'll prepend it to the first message.
+                    message = f"[System Context: {system_prompt}]\n\n{message}"
 
                 session_data = self.sessions[session_key]
                 goose_sid = session_data["id"]
@@ -278,6 +394,9 @@ class MattermostBridge:
         """Main loop for polling Mattermost and handling messages."""
         if not await self.initialize():
             return
+
+        # Start the internal bridge API
+        await self._start_bridge_api()
 
         print(f"[{datetime.now()}] Bridge is polling for messages. Press Ctrl+C to stop.")
 

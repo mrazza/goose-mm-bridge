@@ -4,3 +4,5 @@ pytest
 pytest-asyncio
 pytest-mock
 hypothesis
+mcp
+aiohttp

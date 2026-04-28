@@ -44,3 +44,51 @@ async def test_api_http_error(api):
         
         res = await api.get_me()
         assert res is None
+@pytest.mark.asyncio
+async def test_get_thread(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"posts": {"p1": {"message": "hi"}}}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+        res = await api.get_thread("post_1")
+        assert "p1" in res["posts"]
+        args, _ = mock_url.call_args
+        assert "/posts/post_1/thread" in args[0].get_full_url()
+
+@pytest.mark.asyncio
+async def test_search_posts(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"posts": {"p1": {"message": "found"}}}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+        res = await api.search_posts("terms")
+        assert "p1" in res["posts"]
+        args, _ = mock_url.call_args
+        assert "/posts/search" in args[0].get_full_url()
+        assert args[0].get_method() == "POST"
+
+@pytest.mark.asyncio
+async def test_search_users(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'[{"id": "u1", "username": "user1"}]'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+        res = await api.search_users("term")
+        assert res[0]["username"] == "user1"
+        args, _ = mock_url.call_args
+        assert "/users/search" in args[0].get_full_url()
+
+@pytest.mark.asyncio
+async def test_create_direct_channel(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"id": "c1"}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+        res = await api.create_direct_channel(["u1", "u2"])
+        assert res["id"] == "c1"
+        args, _ = mock_url.call_args
+        assert "/channels/direct" in args[0].get_full_url()
