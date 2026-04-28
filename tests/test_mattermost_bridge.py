@@ -105,3 +105,52 @@ async def test_handle_stop_command(config, mock_api, mock_goose_client):
         assert mock_goose_client.cancel_prompt.called
         assert mock_api.create_post.called
         assert "cancelled" in mock_api.create_post.call_args[0][1]
+@pytest.mark.asyncio
+async def test_ignore_own_messages(config, mock_api):
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.bot_id = "bot_id"
+    
+    post = {"user_id": "bot_id", "message": "hello"}
+    # Should return early
+    await bridge._process_post(post, {})
+    assert not mock_api.get_user.called
+
+@pytest.mark.asyncio
+async def test_require_user_mapping(config, mock_api):
+    config.require_user_mapping = True
+    config.approved_users = []
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.bot_mention = "@bot"
+    
+    post = {
+        "id": "p1", "user_id": "u1", "channel_id": "c1", "message": "@bot hello"
+    }
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={}):
+        await bridge._process_post(post, {"c1": {"type": "D"}})
+        # Should post a warning to MM
+        assert mock_api.create_post.called
+        assert "isolation profile" in mock_api.create_post.call_args[0][1]
+
+@pytest.mark.asyncio
+async def test_concurrency_locking(config, mock_api, mock_goose_client):
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    bridge.bot_mention = "@bot"
+    
+    # Mock a slow prompt to test locking
+    async def slow_prompt(*args):
+        await asyncio.sleep(0.2)
+        yield {"type": "final", "text": "done"}
+    mock_goose_client.prompt = slow_prompt
+    
+    post = {"id": "p1", "user_id": "u1", "channel_id": "c1", "message": "@bot hello"}
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        # Start two tasks for the same thread
+        t1 = asyncio.create_task(bridge._handle_message(post, "linux1"))
+        t2 = asyncio.create_task(bridge._handle_message(post, "linux1"))
+        
+        await asyncio.gather(t1, t2)
+        
+        # Verify they shared the same lock
+        assert "u1:p1" in bridge.session_locks
