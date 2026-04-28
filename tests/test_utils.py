@@ -1,12 +1,23 @@
 from utils import clean_message, get_session_key, load_user_mapping
 import json
 import os
+import pytest
+from hypothesis import given, strategies as st
 
 def test_clean_message():
     assert clean_message("@bot hello", "@bot") == "hello"
     assert clean_message("@bot: hello", "@bot") == "hello"
     assert clean_message("@bot, hello", "@bot") == "hello"
     assert clean_message("just a message", "@bot") == "just a message"
+
+@given(st.text(), st.text(min_size=1))
+def test_clean_message_property(msg, bot_name):
+    # Ensure no crash and basic property: if bot name is in msg, it should be removed
+    # (Simplified property since clean_message has specific logic for prefix punctuation)
+    result = clean_message(msg, bot_name)
+    assert isinstance(result, str)
+    if bot_name in msg and msg.strip().startswith(bot_name):
+        assert bot_name not in result
 
 def test_get_session_key():
     assert get_session_key("user1", "root1") == "user1:root1"

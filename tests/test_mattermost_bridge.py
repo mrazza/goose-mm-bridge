@@ -155,3 +155,52 @@ async def test_concurrency_locking(config, mock_api, mock_goose_client):
         
         # Verify they shared the same lock
         assert "u1:p1" in bridge.session_locks
+
+@pytest.mark.asyncio
+async def test_polling_loop_recovery(config, mock_api):
+    # We'll mock _update_channel_cache to fail once then succeed
+    bridge = MattermostBridge(api=mock_api, config=config)
+    
+    call_count = 0
+    original_update = bridge._update_channel_cache
+    
+    async def mock_update():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise Exception("Transient Error")
+        return await original_update()
+
+    bridge._update_channel_cache = mock_update
+    
+    # Use a small poll interval and mock sleep to exit quickly
+    config.poll_interval = 0.01
+    
+    with patch('asyncio.sleep', side_effect=[None, KeyboardInterrupt()]):
+        await bridge.run()
+    
+    assert call_count >= 2
+    print(f"Loop recovered after {call_count} calls")
+
+@pytest.mark.asyncio
+async def test_user_mapping_edge_cases(config, mock_api):
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.bot_mention = "@bot"
+    
+    # Case 1: Approved user but no mapping
+    config.approved_users = ["user1"]
+    config.require_user_mapping = True
+    post = {"id": "p1", "user_id": "user1", "channel_id": "c1", "message": "@bot hello"}
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={}):
+        mock_api.get_user = AsyncMock(return_value={"username": "user1"})
+        await bridge._process_post(post, {"c1": {"type": "D"}})
+        assert mock_api.create_post.called
+        assert "isolation profile" in mock_api.create_post.call_args[0][1]
+
+    # Case 2: Not approved user but has mapping (should still be ignored)
+    mock_api.create_post.reset_mock()
+    config.approved_users = ["other_user"]
+    with patch('mattermost_bridge.load_user_mapping', return_value={"user1": "linux1"}):
+        await bridge._process_post(post, {"c1": {"type": "D"}})
+        assert not mock_api.create_post.called

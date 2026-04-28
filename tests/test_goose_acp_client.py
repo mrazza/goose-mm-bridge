@@ -132,3 +132,52 @@ async def test_rpc_timeout(client):
         
         assert client._healthy is False
         assert mock_process.terminate.called
+
+@pytest.mark.asyncio
+async def test_large_message_handling(client):
+    mock_process = MagicMock()
+    mock_process.returncode = None
+    # Create a large response (~1MB)
+    large_text = "a" * (1024 * 1024)
+    large_json = json.dumps({"id": 1, "result": {"data": large_text}}) + "\n"
+    
+    # Mock stdout to return this large line
+    mock_process.stdout.readline = AsyncMock(side_effect=[large_json.encode(), b""])
+    mock_process.stdout.at_eof = MagicMock(side_effect=[False, True])
+    client.process = mock_process
+    
+    future = asyncio.Future()
+    client.pending_requests[1] = future
+    
+    # Start the reader task
+    reader = asyncio.create_task(client._read_stdout())
+    
+    # Wait for the future to be resolved by the reader
+    res = await asyncio.wait_for(future, timeout=2)
+    assert res["result"]["data"] == large_text
+    await reader
+
+@pytest.mark.asyncio
+async def test_drain_remaining_chunks_unit(client):
+    session_id = "session_123"
+    client.session_queues[session_id] = asyncio.Queue()
+    
+    # Put some late chunks in
+    await client.session_queues[session_id].put({
+        "method": "session/prompt/next",
+        "params": {"chunk": {"type": "text", "text": "late "}}
+    })
+    await client.session_queues[session_id].put({
+        "method": "session/prompt/next",
+        "params": {"chunk": {"type": "text", "text": "data"}}
+    })
+    
+    final_res = await client._drain_remaining_chunks(session_id, "initial ")
+    assert final_res == "initial late data"
+    assert client.session_queues[session_id].empty()
+
+@pytest.mark.asyncio
+async def test_drain_missing_session(client):
+    # Verify the fix for KeyError when session is gone
+    res = await client._drain_remaining_chunks("missing", "test")
+    assert res == "test"
