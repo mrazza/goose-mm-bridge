@@ -62,6 +62,18 @@ class MattermostAPI:
     async def get_channel_posts(self, channel_id: str, since: int) -> Optional[Dict[str, Any]]:
         return await self._request(f"/channels/{channel_id}/posts?since={since}")
 
+    async def get_thread(self, post_id: str) -> Optional[Dict[str, Any]]:
+        return await self._request(f"/posts/{post_id}/thread")
+
+    async def search_posts(self, team_id: str, terms: str) -> Optional[Dict[str, Any]]:
+        return await self._request(f"/teams/{team_id}/posts/search", data={"terms": terms}, method="POST")
+
+    async def search_users(self, term: str) -> Optional[list]:
+        return await self._request("/users/search", data={"term": term}, method="POST")
+
+    async def create_direct_channel(self, user_ids: list) -> Optional[Dict[str, Any]]:
+        return await self._request("/channels/direct", data=user_ids, method="POST")
+
     async def create_post(self, channel_id: str, message: str, root_id: Optional[str] = None, props: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         data = {"channel_id": channel_id, "message": message, "root_id": root_id}
         if props:
