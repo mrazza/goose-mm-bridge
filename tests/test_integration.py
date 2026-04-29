@@ -50,7 +50,7 @@ async def test_integration_flow_with_process_mock(integration_config, mock_api):
         # 1. Setup Bridge
         bridge = MattermostBridge(api=mock_api, config=integration_config)
         bridge.last_since = 0
-        bridge._start_bridge_api = AsyncMock()
+        bridge._start_http_server = AsyncMock()
 
         # 2. Mock Mattermost API polling behavior
         post_data = {
@@ -112,26 +112,3 @@ async def test_integration_flow_with_process_mock(integration_config, mock_api):
         sim_task.cancel()
         await asyncio.gather(bridge_task, sim_task, return_exceptions=True)
 
-@pytest.mark.asyncio
-async def test_tool_call_flow(integration_config, mock_api):
-    """
-    Validates the internal Bridge API tool call handling.
-    """
-    bridge = MattermostBridge(api=mock_api, config=integration_config)
-    bridge.bridge_tokens = {"session_1": "valid_token"}
-    
-    mock_request = MagicMock()
-    mock_request.headers = {"X-Bridge-Token": "valid_token"}
-    mock_request.json = AsyncMock(return_value={
-        "session_key": "session_1",
-        "tool": "get_user_info",
-        "arguments": {"user_id": "target_user"}
-    })
-    
-    mock_api.get_user = AsyncMock(return_value={"id": "target_user", "username": "target"})
-    
-    response = await bridge._handle_tool_call(mock_request)
-    
-    assert response.status == 200
-    data = json.loads(response.body.decode())
-    assert data["result"]["username"] == "target"
