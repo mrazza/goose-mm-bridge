@@ -354,11 +354,12 @@ class GooseACPClient:
             return True
         return False
     def _get_mcp_servers(self):
-        if not self.config.mcp_enabled or not self.sse_supported:
+        if not self.config.mcp_enabled:
             return []
         
         return [{
-            "type": "remote",
+            "type": "http",
             "name": "mattermost-bridge",
-            "url": f"http://{self.config.mcp_host}:{self.config.mcp_port}/mcp/messages"
+            "url": f"http://{self.config.mcp_host}:{self.config.mcp_port}/mcp",
+            "headers": []
         }]
