@@ -1,24 +1,10 @@
 import pytest
 import asyncio
-import json
 from unittest.mock import MagicMock, AsyncMock, patch
 from mattermost_bridge import MattermostBridge
 from goose_acp_client import GooseACPClient
 from config import Config
-
-class MockProcess:
-    def __init__(self):
-        self.stdin = MagicMock()
-        self.stdin.write = MagicMock()
-        self.stdin.drain = AsyncMock(return_value=None)
-        self.stdout = asyncio.StreamReader()
-        self.stderr = asyncio.StreamReader()
-        self.returncode = None
-        self.terminate = MagicMock()
-
-    def feed_stdout(self, data: dict):
-        line = json.dumps(data) + "\n"
-        self.stdout.feed_data(line.encode())
+from goose_simulator import MockProcess, simulate_goose_behavior
 
 @pytest.mark.asyncio
 async def test_bridge_integration_flow_with_goose_process():
@@ -74,49 +60,6 @@ async def test_bridge_integration_flow_with_goose_process():
     async def side_effect_subprocess(*args, **kwargs):
         return mock_process
 
-    # Helper to simulate Goose responses
-    async def simulate_goose_behavior():
-        try:
-            # 1. Handshake response (triggered by first create_session -> ensure_running)
-            await asyncio.sleep(0.05)
-            mock_process.feed_stdout({
-                "jsonrpc": "2.0", "id": 1, 
-                "result": {"capabilities": {"mcp": {"sse": True}}}
-            })
-            
-            # 2. session/new response (triggered by create_session)
-            await asyncio.sleep(0.05)
-            mock_process.feed_stdout({
-                "jsonrpc": "2.0", "id": 2, 
-                "result": {"sessionId": "session_abc"}
-            })
-            
-            # 3. session/prompt chunks (triggered by prompt)
-            await asyncio.sleep(0.05)
-            # Thinking chunk
-            mock_process.feed_stdout({
-                "jsonrpc": "2.0", "method": "session/update",
-                "params": {
-                    "sessionId": "session_abc",
-                    "update": {"sessionUpdate": "agent_thinking_chunk", "thinking": "Analyzing..."}
-                }
-            })
-            # Content chunk
-            mock_process.feed_stdout({
-                "jsonrpc": "2.0", "method": "session/update",
-                "params": {
-                    "sessionId": "session_abc",
-                    "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "The answer is 42."}}
-                }
-            })
-            # Final response (id 3 because prompt is the 3rd request: initialize, session/new, session/prompt)
-            mock_process.feed_stdout({
-                "jsonrpc": "2.0", "id": 3, 
-                "result": {"status": "completed"}
-            })
-        except Exception as e:
-            print(f"Simulator Error: {e}")
-
     # 4. Setup Bridge with REAL GooseACPClient
     def goose_factory(user):
         return GooseACPClient(user, config=config)
@@ -128,8 +71,8 @@ async def test_bridge_integration_flow_with_goose_process():
     with patch('mattermost_bridge.load_user_mapping', return_value={"user_1": "linux_alice"}), \
          patch('asyncio.create_subprocess_exec', side_effect=side_effect_subprocess):
         
-        # Start the Goose simulator
-        simulator_task = asyncio.create_task(simulate_goose_behavior())
+        # Start the Goose simulator from the util file
+        simulator_task = asyncio.create_task(simulate_goose_behavior(mock_process))
         
         # Start the bridge
         bridge_task = asyncio.create_task(bridge.run())
