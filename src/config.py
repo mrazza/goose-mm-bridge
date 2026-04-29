@@ -19,6 +19,9 @@ class Config:
     max_sessions: int = int(os.getenv("MAX_SESSIONS", "100"))
     user_mapping_file: str = os.getenv("USER_MAPPING_FILE", "user_mapping.json")
     require_user_mapping: bool = os.getenv("REQUIRE_USER_MAPPING", "false").lower() == "true"
+    mcp_host: str = os.getenv("MCP_HOST", "127.0.0.1")
+    mcp_port: int = int(os.getenv("MCP_PORT", "8000"))
+    mcp_enabled: bool = os.getenv("MCP_ENABLED", "true").lower() == "true"
 
     def __post_init__(self):
         if self.approved_users is None:
