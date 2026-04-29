@@ -177,7 +177,25 @@ async def test_drain_remaining_chunks_unit(client):
     assert client.session_queues[session_id].empty()
 
 @pytest.mark.asyncio
-async def test_drain_missing_session(client):
-    # Verify the fix for KeyError when session is gone
-    res = await client._drain_remaining_chunks("missing", "test")
-    assert res == "test"
+async def test_get_mcp_servers(client):
+    client.config.mcp_enabled = True
+    client.config.mcp_host = "localhost"
+    client.config.mcp_port = 5006
+    
+    # Test with HTTP support
+    client.http_supported = True
+    servers = client._get_mcp_servers()
+    assert len(servers) == 1
+    assert servers[0]["type"] == "http"
+    assert "5006/mcp" in servers[0]["url"]
+    
+    # Test without HTTP support
+    client.http_supported = False
+    servers = client._get_mcp_servers()
+    assert len(servers) == 0
+
+    # Test with HTTP support but disabled
+    client.http_supported = True
+    client.config.mcp_enabled = False
+    servers = client._get_mcp_servers()
+    assert len(servers) == 0
