@@ -54,7 +54,7 @@ class MattermostMCPServer:
                 channels = self.bridge.channels_cache
                 return [{"type": "text", "text": str(channels)}]
             
-            throw ValueError(f"Unknown tool: {name}")
+            raise ValueError(f"Unknown tool: {name}")
 
     async def run(self, host: str, port: int):
         app = Starlette(debug=True)
