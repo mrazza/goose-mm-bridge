@@ -19,8 +19,8 @@ class Config:
     max_sessions: int = int(os.getenv("MAX_SESSIONS", "100"))
     user_mapping_file: str = os.getenv("USER_MAPPING_FILE", "user_mapping.json")
     require_user_mapping: bool = os.getenv("REQUIRE_USER_MAPPING", "false").lower() == "true"
-    bridge_api_host: str = os.getenv("BRIDGE_API_HOST", "127.0.0.1")
-    bridge_api_port: int = int(os.getenv("BRIDGE_API_PORT", "8080"))
+    bridge_socket_path: str = os.getenv("BRIDGE_SOCKET_PATH", "/tmp/mattermost-bridge.sock")
+    
 
     def __post_init__(self):
         if self.approved_users is None:
