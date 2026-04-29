@@ -196,12 +196,16 @@ class GooseACPClient:
                     print(f"[{datetime.now()}] Error terminating process: {e}")
             raise
 
-    async def create_session(self) -> str:
+    async def create_session(self, system_prompt: Optional[str] = None) -> str:
         """Creates a new session in the Goose ACP."""
-        res = await self.send_request("session/new", {
+        params = {
             "cwd": os.getcwd(),
             "mcpServers": self._get_mcp_servers()
-        })
+        }
+        if system_prompt:
+            params["systemPrompt"] = system_prompt
+            
+        res = await self.send_request("session/new", params)
         if "error" in res:
             raise Exception(f"Failed to create session: {res['error']}")
         session_id = res["result"]["sessionId"]

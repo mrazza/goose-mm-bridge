@@ -191,8 +191,18 @@ class MattermostBridge:
 
                 if session_key not in self.sessions:
                     print(f"[{datetime.now()}] Creating new Goose session for {session_key}")
+                    
+                    # Fetch user info for system prompt
+                    user_info = await self.api.get_user(sender_id)
+                    username = user_info.get("username", "unknown") if user_info else "unknown"
+                    system_prompt = (
+                        f"You are interacting via a Mattermost bridge. Your primary user is @{username} (ID: {sender_id}). "
+                        "While you automatically receive messages directed at you, use get_thread_context to see the full "
+                        "discussion between other participants in this thread/channel."
+                    )
+                    
                     self.sessions[session_key] = {
-                        "id": await goose.create_session(),
+                        "id": await goose.create_session(system_prompt=system_prompt),
                         "linux_user": linux_user,
                     }
 

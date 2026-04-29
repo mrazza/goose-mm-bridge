@@ -101,6 +101,15 @@ async def test_bridge_integration_flow_with_goose_process():
     assert "user_1:post_123" in bridge.sessions
     assert bridge.sessions["user_1:post_123"]["id"] == "session_abc"
     
+    # Verify system prompt was passed to Goose
+    found_system_prompt = False
+    for call in mock_process.stdin.write.call_args_list:
+        sent_data = call[0][0].decode()
+        if "systemPrompt" in sent_data and "primary user is @alice" in sent_data:
+            found_system_prompt = True
+            break
+    assert found_system_prompt, "System prompt not found in data sent to Goose"
+
     # Verify Mattermost feedback
     assert mock_api.create_post.called
     assert mock_api.update_post.called
