@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
+from aiohttp import web
 from config import default_config
 from goose_acp_client import GooseACPClient
 from mattermost_api import MattermostAPI
@@ -15,30 +16,10 @@ from utils import clean_message, load_user_mapping, get_session_key
 import mcp.types as types
 from mcp.server.lowlevel import Server
 from mcp.server.models import InitializationOptions
+from mcp.server.sse import SseServerTransport
 
 CACHE_TTL = 60  # Update cache every 60 seconds
 THINKING_MSG = ":thinking_face: **Thinking...**"
-
-class AsyncioStreamWrapper:
-    """Bridges asyncio StreamReader/Writer to MCP Server expected streams."""
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        self.reader = reader
-        self.writer = writer
-
-    async def receive(self) -> types.JSONRPCMessage:
-        line = await self.reader.readline()
-        if not line:
-            raise Exception("Connection closed")
-        return types.JSONRPCMessage.model_validate_json(line)
-
-    async def send(self, message: types.JSONRPCMessage) -> None:
-        self.writer.write(message.model_dump_json(by_alias=True).encode() + b"\n")
-        await self.writer.drain()
-
-    async def aclose(self) -> None:
-        self.writer.close()
-        await self.writer.wait_closed()
-
 
 class MattermostBridge:
     """Manages the connection between Mattermost and Goose."""
@@ -58,6 +39,7 @@ class MattermostBridge:
         self.bot_username = None
         self.bot_mention = None
         self.background_tasks = set()
+        self.mcp_transports: Dict[str, SseServerTransport] = {}
 
     async def initialize(self) -> bool:
         """Initializes the bridge by connecting to Mattermost."""
@@ -93,19 +75,16 @@ class MattermostBridge:
             self.channels_cache = list({c["id"]: c for c in channels}.values())
             self.last_cache_update = current_time
 
-    async def _handle_mcp_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        """Handles an MCP connection from the proxy shim."""
-        try:
-            # First line is the session key
-            line = await reader.readline()
-            session_key = line.decode().strip()
-            if not session_key:
-                writer.close()
-                return
+    async def _handle_sse(self, request):
+        """Handles an MCP SSE connection."""
+        session_key = request.match_info['session_key']
+        if self.config.debug:
+            print(f"[{datetime.now()}] SSE connection established for {session_key}")
 
-            if self.config.debug:
-                print(f"[{datetime.now()}] MCP connection established for {session_key}")
+        transport = SseServerTransport(f"/messages/{session_key}")
+        self.mcp_transports[session_key] = transport
 
+        async with transport.connect_sse(request.rel_url.query, request.headers, request._payload_writer) as (read_stream, write_stream):
             server = Server("mattermost-bridge")
 
             @server.list_tools()
@@ -243,33 +222,35 @@ class MattermostBridge:
                 ),
             )
 
-            wrapper = AsyncioStreamWrapper(reader, writer)
             await server.run(
-                read_stream=wrapper,
-                write_stream=wrapper,
+                read_stream=read_stream,
+                write_stream=write_stream,
                 initialization_options=options,
             )
-        except Exception as e:
-            if self.config.debug:
-                print(f"[{datetime.now()}] MCP Connection Error: {e}")
-        finally:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except:
-                pass
+        
+        return web.Response()
 
-    async def _start_mcp_server(self):
-        """Starts the MCP Unix socket server."""
-        if os.path.exists(self.config.bridge_socket_path):
-            os.remove(self.config.bridge_socket_path)
+    async def _handle_messages(self, request):
+        """Handles MCP messages sent via POST."""
+        session_key = request.match_info['session_key']
+        transport = self.mcp_transports.get(session_key)
+        if not transport:
+            return web.Response(status=404)
         
-        server = await asyncio.start_unix_server(self._handle_mcp_connection, self.config.bridge_socket_path)
-        os.chmod(self.config.bridge_socket_path, 0o666)
+        await transport.handle_post_message(request, request._payload)
+        return web.Response(status=202)
+
+    async def _start_http_server(self):
+        """Starts the HTTP server for MCP SSE."""
+        app = web.Application()
+        app.router.add_get("/sse/{session_key}", self._handle_sse)
+        app.router.add_post("/messages/{session_key}", self._handle_messages)
         
-        print(f"[{datetime.now()}] MCP Socket Server listening on {self.config.bridge_socket_path}")
-        async with server:
-            await server.serve_forever()
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, self.config.bridge_api_host, self.config.bridge_api_port)
+        await site.start()
+        print(f"[{datetime.now()}] MCP SSE Server listening on http://{self.config.bridge_api_host}:{self.config.bridge_api_port}")
 
     async def _handle_stop_command(self, post: dict):
         """Handles the !stop command to cancel active prompts."""
@@ -320,6 +301,9 @@ class MattermostBridge:
 
             if k in self.session_locks:
                 del self.session_locks[k]
+            
+            if k in self.mcp_transports:
+                del self.mcp_transports[k]
 
     async def _stream_response_to_mattermost(self, goose: GooseACPClient, sid: str, msg: str, channel_id: str, root_id: str):
         """Streams a response from Goose to Mattermost."""
@@ -399,10 +383,10 @@ class MattermostBridge:
                     user_info = await self.api.get_user(sender_id)
                     username = user_info.get("username", "unknown") if user_info else "unknown"
 
+                    # Treat as remote extension via SSE
                     mcp_config = {
                         "mattermost": {
-                            "command": "python3",
-                            "args": [os.path.abspath("src/mcp_shim.py"), self.config.bridge_socket_path, session_key],
+                            "url": f"http://{self.config.bridge_api_host}:{self.config.bridge_api_port}/sse/{session_key}"
                         }
                     }
 
@@ -493,8 +477,8 @@ class MattermostBridge:
         if not await self.initialize():
             return
 
-        mcp_task = asyncio.create_task(self._start_mcp_server())
-        self.background_tasks.add(mcp_task)
+        # Start the HTTP Server for MCP SSE
+        await self._start_http_server()
 
         print(f"[{datetime.now()}] Bridge is polling for messages. Press Ctrl+C to stop.")
 
@@ -540,9 +524,3 @@ class MattermostBridge:
                         client.process.terminate()
                     except:
                         pass
-            
-            if os.path.exists(self.config.bridge_socket_path):
-                try:
-                    os.remove(self.config.bridge_socket_path)
-                except:
-                    pass
