@@ -17,9 +17,9 @@ def mcp_server(mock_bridge):
 
 @pytest.mark.asyncio
 async def test_list_tools(mcp_server):
-    tools = await mcp_server.list_tools()
+    tools = await mcp_server.mcp.list_tools()
     assert len(tools) == 7
-    tool_names = [t["name"] for t in tools]
+    tool_names = [t.name for t in tools]
     assert "send_message" in tool_names
     assert "get_channels" in tool_names
     assert "get_thread_context" in tool_names
@@ -36,18 +36,18 @@ async def test_call_tool_send_message(mcp_server, mock_bridge):
         "root_id": "r1"
     }
     
-    result = await mcp_server.call_tool("send_message", arguments)
+    result, _ = await mcp_server.mcp.call_tool("send_message", arguments)
     
     assert len(result) == 1
-    assert result[0]["text"] == "Message sent successfully"
+    assert result[0].text == "Message sent successfully"
     mock_bridge.api.create_post.assert_called_once_with("c1", "hello", root_id="r1")
 
 @pytest.mark.asyncio
 async def test_call_tool_get_channels(mcp_server, mock_bridge):
-    result = await mcp_server.call_tool("get_channels", {})
+    result, _ = await mcp_server.mcp.call_tool("get_channels", {})
     
     assert len(result) == 1
-    assert "town-square" in result[0]["text"]
+    assert "town-square" in result[0].text
     mock_bridge._update_channel_cache.assert_called_once()
 
 @pytest.mark.asyncio
@@ -60,11 +60,11 @@ async def test_call_tool_get_thread_context(mcp_server, mock_bridge):
     })
     mock_bridge.api.get_user = AsyncMock(side_effect=lambda uid: {"username": f"user_{uid}"})
     
-    result = await mcp_server.call_tool("get_thread_context", {"root_id": "r1"})
+    result, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1"})
     
     assert len(result) == 1
-    assert "[Sender: @user_u1] first" in result[0]["text"]
-    assert "[Sender: @user_u2] second" in result[0]["text"]
+    assert "[Sender: @user_u1] first" in result[0].text
+    assert "[Sender: @user_u2] second" in result[0].text
     mock_bridge.api.get_thread.assert_called_once_with("r1")
 
 @pytest.mark.asyncio
@@ -74,10 +74,10 @@ async def test_call_tool_search_messages(mcp_server, mock_bridge):
         "posts": {"p1": {"id": "p1", "channel_id": "c1", "message": "found it", "create_at": 100}}
     })
     
-    result = await mcp_server.call_tool("search_messages", {"terms": "query"})
+    result, _ = await mcp_server.mcp.call_tool("search_messages", {"terms": "query"})
     
     assert len(result) == 1
-    assert "found it" in result[0]["text"]
+    assert "found it" in result[0].text
     mock_bridge.api.search_posts.assert_called_once_with("t1", "query")
 
 @pytest.mark.asyncio
@@ -88,12 +88,12 @@ async def test_call_tool_send_direct_message(mcp_server, mock_bridge):
     ])
     mock_bridge.api.create_direct_channel = AsyncMock(return_value={"id": "dm_channel"})
     
-    result = await mcp_server.call_tool("send_direct_message", {
+    result, _ = await mcp_server.mcp.call_tool("send_direct_message", {
         "usernames": ["@user1"],
         "message": "private hello"
     })
     
-    assert "Direct message sent" in result[0]["text"]
+    assert "Direct message sent" in result[0].text
     mock_bridge.api.create_direct_channel.assert_called_once()
     # Should include both user1 and me
     user_ids = mock_bridge.api.create_direct_channel.call_args[0][0]
@@ -102,5 +102,6 @@ async def test_call_tool_send_direct_message(mcp_server, mock_bridge):
 
 @pytest.mark.asyncio
 async def test_call_tool_unknown(mcp_server):
-    with pytest.raises(ValueError, match="Unknown tool: ghost_tool"):
-        await mcp_server.call_tool("ghost_tool", {})
+    from mcp.server.fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="Unknown tool: ghost_tool"):
+        await mcp_server.mcp.call_tool("ghost_tool", {})
