@@ -18,6 +18,7 @@ class GooseACPClient:
         self.pending_requests: Dict[int, asyncio.Future] = {}
         self.session_queues: Dict[str, asyncio.Queue] = {}
         self.active_prompts: Dict[str, int] = {}
+        self.sse_supported = False
         self.last_id_used = 0
         self._healthy = True
         self._start_lock = asyncio.Lock()
@@ -65,12 +66,14 @@ class GooseACPClient:
         # Handshake
         try:
             # Note: we use _send_raw_request here because send_request calls ensure_running
-            await asyncio.wait_for(self._send_raw_request("initialize", {
+            res = await asyncio.wait_for(self._send_raw_request("initialize", {
                 "protocolVersion": 0,
                 "capabilities": {},
                 "clientInfo": {"name": "goose-mm-bridge", "version": "1.0.0"}
             }), timeout=self.config.rpc_timeout)
-            print(f"[{datetime.now()}] Goose ACP initialized.")
+            capabilities = res.get("result", {}).get("capabilities", {})
+            self.sse_supported = capabilities.get("mcp", {}).get("sse", False)
+            print(f"[{datetime.now()}] Goose ACP initialized. SSE support: {self.sse_supported}")
         except Exception as e:
             print(f"[{datetime.now()}] Failed to initialize Goose ACP: {e}")
             if self.process:
@@ -197,7 +200,7 @@ class GooseACPClient:
         """Creates a new session in the Goose ACP."""
         res = await self.send_request("session/new", {
             "cwd": os.getcwd(),
-            "mcpServers": []
+            "mcpServers": self._get_mcp_servers()
         })
         if "error" in res:
             raise Exception(f"Failed to create session: {res['error']}")
@@ -346,3 +349,12 @@ class GooseACPClient:
             })
             return True
         return False
+    def _get_mcp_servers(self):
+        if not self.config.mcp_enabled or not self.sse_supported:
+            return []
+        
+        return [{
+            "type": "remote",
+            "name": "mattermost-bridge",
+            "url": f"http://{self.config.mcp_host}:{self.config.mcp_port}/mcp/messages"
+        }]
