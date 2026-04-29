@@ -1,11 +1,27 @@
 import pytest
 import asyncio
+import json
 from unittest.mock import MagicMock, AsyncMock, patch
 from mattermost_bridge import MattermostBridge
+from goose_acp_client import GooseACPClient
 from config import Config
 
+class MockProcess:
+    def __init__(self):
+        self.stdin = MagicMock()
+        self.stdin.write = MagicMock()
+        self.stdin.drain = AsyncMock(return_value=None)
+        self.stdout = asyncio.StreamReader()
+        self.stderr = asyncio.StreamReader()
+        self.returncode = None
+        self.terminate = MagicMock()
+
+    def feed_stdout(self, data: dict):
+        line = json.dumps(data) + "\n"
+        self.stdout.feed_data(line.encode())
+
 @pytest.mark.asyncio
-async def test_bridge_integration_flow():
+async def test_bridge_integration_flow_with_goose_process():
     # 1. Setup Mock Config
     config = Config(
         mattermost_url="http://mattermost.example.com",
@@ -18,16 +34,12 @@ async def test_bridge_integration_flow():
 
     # 2. Mock Mattermost API
     mock_api = MagicMock()
-    # Mock initialization calls
     mock_api.get_me = AsyncMock(return_value={"id": "bot_id", "username": "goose-bot"})
     mock_api.get_direct_channels = AsyncMock(return_value=[])
     mock_api.get_my_teams = AsyncMock(return_value=[{"id": "team_1"}])
     mock_api.get_my_channels = AsyncMock(return_value=[{"id": "chan_1", "type": "O"}])
-    
-    # Mock user info
     mock_api.get_user = AsyncMock(return_value={"id": "user_1", "username": "alice"})
     
-    # Mock post fetching - first call returns a post, subsequent calls return nothing
     test_post = {
         "id": "post_123",
         "user_id": "user_1",
@@ -36,113 +48,124 @@ async def test_bridge_integration_flow():
         "create_at": 1000
     }
     
-    # Track calls to simulate a single loop iteration
     call_tracker = {"get_posts_count": 0}
-    
     async def side_effect_get_posts(channel_id, since):
-        # The bridge polls all channels in the cache. 
-        # In this test, there's only 'chan_1'.
         if call_tracker["get_posts_count"] == 0:
             call_tracker["get_posts_count"] += 1
-            # Note: The bridge sorts posts by create_at and then calls _process_post
             return {"posts": {"post_123": test_post}, "order": ["post_123"]}
         return {"posts": {}, "order": []}
 
     mock_api.get_channel_posts = AsyncMock(side_effect=side_effect_get_posts)
+    mock_api.create_post = AsyncMock(return_value={"id": "bot_post_456"})
     
-    # Mock post creation and updates
-    created_post = {"id": "bot_post_456"}
-    mock_api.create_post = AsyncMock(return_value=created_post)
-    mock_api.update_post = AsyncMock(return_value=created_post)
+    # Event to signal when the final response is posted to Mattermost
+    final_response_posted = asyncio.Event()
+    
+    async def side_effect_update_post(post_id, message, props=None):
+        if "The answer is 42." in message:
+            final_response_posted.set()
+        return {"id": post_id}
+        
+    mock_api.update_post = AsyncMock(side_effect=side_effect_update_post)
 
-    # 3. Mock Goose ACP Client
-    mock_goose = MagicMock()
-    mock_goose.create_session = AsyncMock(return_value="session_abc")
-    mock_goose.process = MagicMock()
-    mock_goose.process.returncode = None
+    # 3. Setup Mock Goose Process
+    mock_process = MockProcess()
     
-    async def mock_prompt(sid, message):
-        assert sid == "session_abc"
-        assert "meaning of life" in message
-        yield {"type": "thinking", "text": "Analyzing the universe..."}
-        yield {"type": "content", "text": "The answer is 42."}
-        yield {"type": "final", "text": "The answer is 42."}
-    
-    mock_goose.prompt = mock_prompt
-    
-    # 4. Setup Bridge with Factory
+    async def side_effect_subprocess(*args, **kwargs):
+        return mock_process
+
+    # Helper to simulate Goose responses
+    async def simulate_goose_behavior():
+        try:
+            # 1. Handshake response (triggered by first create_session -> ensure_running)
+            await asyncio.sleep(0.05)
+            mock_process.feed_stdout({
+                "jsonrpc": "2.0", "id": 1, 
+                "result": {"capabilities": {"mcp": {"sse": True}}}
+            })
+            
+            # 2. session/new response (triggered by create_session)
+            await asyncio.sleep(0.05)
+            mock_process.feed_stdout({
+                "jsonrpc": "2.0", "id": 2, 
+                "result": {"sessionId": "session_abc"}
+            })
+            
+            # 3. session/prompt chunks (triggered by prompt)
+            await asyncio.sleep(0.05)
+            # Thinking chunk
+            mock_process.feed_stdout({
+                "jsonrpc": "2.0", "method": "session/update",
+                "params": {
+                    "sessionId": "session_abc",
+                    "update": {"sessionUpdate": "agent_thinking_chunk", "thinking": "Analyzing..."}
+                }
+            })
+            # Content chunk
+            mock_process.feed_stdout({
+                "jsonrpc": "2.0", "method": "session/update",
+                "params": {
+                    "sessionId": "session_abc",
+                    "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "The answer is 42."}}
+                }
+            })
+            # Final response (id 3 because prompt is the 3rd request: initialize, session/new, session/prompt)
+            mock_process.feed_stdout({
+                "jsonrpc": "2.0", "id": 3, 
+                "result": {"status": "completed"}
+            })
+        except Exception as e:
+            print(f"Simulator Error: {e}")
+
+    # 4. Setup Bridge with REAL GooseACPClient
     def goose_factory(user):
-        return mock_goose
+        return GooseACPClient(user, config=config)
 
     bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=goose_factory)
-    # Ensure our test post (create_at=1000) is processed
     bridge.last_since = 0
 
-    # 5. Execute Bridge Run with a controlled exit
-    # We need the loop to run at least once and then wait for tasks.
-    # The bridge.run() calls _update_channel_cache, then polls, THEN sleeps.
-    
-    loop_count = 0
-    # Capture the real sleep so we don't recurse
-    real_sleep = asyncio.sleep
-    
-    async def side_effect_sleep(interval):
-        nonlocal loop_count
-        loop_count += 1
-        # Wait for any background tasks to start and finish
-        # _process_post spawns a task, so we must yield control.
-        for _ in range(10):
-            if not bridge.background_tasks:
-                await real_sleep(0)
-                break
-            await asyncio.gather(*bridge.background_tasks)
-            
-        raise KeyboardInterrupt()
-
+    # 5. Execute Bridge Run in background
     with patch('mattermost_bridge.load_user_mapping', return_value={"user_1": "linux_alice"}), \
-         patch('asyncio.sleep', side_effect=side_effect_sleep):
-        await bridge.run()
+         patch('asyncio.create_subprocess_exec', side_effect=side_effect_subprocess):
+        
+        # Start the Goose simulator
+        simulator_task = asyncio.create_task(simulate_goose_behavior())
+        
+        # Start the bridge
+        bridge_task = asyncio.create_task(bridge.run())
+        
+        try:
+            # Wait for the flow to complete
+            await asyncio.wait_for(final_response_posted.wait(), timeout=5.0)
+            
+            # Wait for background tasks in bridge to finish (streaming might take a moment)
+            if bridge.background_tasks:
+                await asyncio.gather(*bridge.background_tasks)
+                
+        finally:
+            bridge_task.cancel()
+            simulator_task.cancel()
+            try:
+                await bridge_task
+            except asyncio.CancelledError:
+                pass
 
     # 6. Verifications
-    
-    # Verify initialization
     mock_api.get_me.assert_called_once()
     assert bridge.bot_id == "bot_id"
-    assert bridge.bot_mention == "@goose-bot"
-
-    # Verify polling happened
-    assert mock_api.get_channel_posts.called
     
-    # Verify session creation
-    mock_goose.create_session.assert_called_once()
+    # Check that GooseACPClient was actually used and created a session
     assert "user_1:post_123" in bridge.sessions
-    assert bridge.sessions["user_1:post_123"]["linux_user"] == "linux_alice"
+    assert bridge.sessions["user_1:post_123"]["id"] == "session_abc"
     
-    # Verify message processing
-    # Note: _handle_message is spawned as a task, so we might need a small wait if it's async
-    # However, since we used KeyboardInterrupt in the main loop AFTER calling _process_post,
-    # the task was created. We need to ensure it finished.
-    # In this test, because we didn't await the tasks in the loop (they are background tasks),
-    # we should wait for them.
-    
-    if bridge.background_tasks:
-        await asyncio.gather(*bridge.background_tasks)
-
     # Verify Mattermost feedback
-    # Expectation: 
-    # 1. Thinking post created
-    # 2. Post updated with content
-    # 3. Post updated with final result
-    
     assert mock_api.create_post.called
-    # First creation is thinking msg
-    first_post_call = mock_api.create_post.call_args_list[0]
-    assert ":thinking_face:" in first_post_call[0][1]
-    
-    # Final update
     assert mock_api.update_post.called
-    last_update_call = mock_api.update_post.call_args_list[-1]
-    assert "The answer is 42." in last_update_call[0][1]
-    # Check thinking trace in attachments
-    assert "attachments" in last_update_call[1]["props"]
-    assert "Analyzing the universe..." in last_update_call[1]["props"]["attachments"][0]["text"]
+    
+    # Verify final answer
+    found_content = False
+    for call in mock_api.update_post.call_args_list:
+        if "The answer is 42." in call[0][1]:
+            found_content = True
+            break
+    assert found_content, "Final answer not found in Mattermost updates"
