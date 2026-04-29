@@ -19,6 +19,7 @@ class GooseACPClient:
         self.session_queues: Dict[str, asyncio.Queue] = {}
         self.active_prompts: Dict[str, int] = {}
         self.sse_supported = False
+        self.http_supported = False
         self.last_id_used = 0
         self._healthy = True
         self._start_lock = asyncio.Lock()
@@ -73,7 +74,8 @@ class GooseACPClient:
             }), timeout=self.config.rpc_timeout)
             capabilities = res.get("result", {}).get("capabilities", {})
             self.sse_supported = capabilities.get("mcp", {}).get("sse", False)
-            print(f"[{datetime.now()}] Goose ACP initialized. SSE support: {self.sse_supported}")
+            self.http_supported = capabilities.get("mcp", {}).get("http", False)
+            print(f"[{datetime.now()}] Goose ACP initialized. SSE support: {self.sse_supported}, HTTP support: {self.http_supported}")
         except Exception as e:
             print(f"[{datetime.now()}] Failed to initialize Goose ACP: {e}")
             if self.process:
@@ -354,7 +356,7 @@ class GooseACPClient:
             return True
         return False
     def _get_mcp_servers(self):
-        if not self.config.mcp_enabled:
+        if not self.config.mcp_enabled or not self.http_supported:
             return []
         
         return [{
