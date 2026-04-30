@@ -192,10 +192,15 @@ class MattermostBridge:
                 if session_key not in self.sessions:
                     print(f"[{datetime.now()}] Creating new Goose session for {session_key}")
                     
+                    sid = await goose.create_session()
                     self.sessions[session_key] = {
-                        "id": await goose.create_session(),
+                        "id": sid,
                         "linux_user": linux_user,
                     }
+                    # Inform the agent about the current context
+                    context_msg = f"SYSTEM: You are currently processing a Mattermost thread. Channel ID: {channel_id}, Root Post ID (Thread ID): {root_id}. You can use these IDs with your tools to fetch more context if needed."
+                    async for _ in goose.prompt(sid, context_msg):
+                        pass
 
                 session_data = self.sessions[session_key]
                 goose_sid = session_data["id"]
