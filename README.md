@@ -117,23 +117,6 @@ The bridge is configured via environment variables in the `.env` file:
 | `MCP_HOST` | The host address the internal MCP server binds to. | `localhost` |
 | `MCP_PORT` | The port used by the internal MCP server. | `8080` |
 
-| `MATTERMOST_TOKEN` | Your Mattermost Bot Access Token | |
-| `MATTERMOST_SCHEME` | `http` or `https` | `https` |
-| `MATTERMOST_PORT` | The port for your Mattermost instance | `443` |
-| `APPROVED_USERS` | Comma-separated list of usernames or user IDs allowed | (All allowed) |
-| `USER_MAPPING_FILE` | Path to the JSON file mapping Mattermost users | `user_mapping.json` |
-| `POLL_INTERVAL` | Frequency (seconds) to poll for new messages | `1` |
-| `DEBUG` | Enable verbose logging of JSON-RPC messages | `false` |
-| `GOOSE_THINKING_TRACE` | Stream thinking process as attachments | `true` |
-| `RPC_TIMEOUT` | Timeout for requests to Goose (seconds) | `600` |
-| `REQUIRE_USER_MAPPING` | Reject users not found in mapping file | `false` |
-| `MAX_SESSIONS` | Maximum concurrent sessions before pruning | `100` |
-| `MCP_ENABLED` | Enable the internal MCP server for Goose | `true` |
-| `MCP_HOST` | Host for the internal MCP server | `localhost` |
-| `MCP_PORT` | Port for the internal MCP server | `8080` |
-
-
-
 > **💡 Note on Threading**: The bridge uses Mattermost thread IDs (`root_id`) to isolate conversations. This allows you to have multiple, independent discussions with the bot simultaneously—even within the same channel. Mentioning the bot in a reply will continue that specific conversation thread.
 
 ## 🎮 Commands
