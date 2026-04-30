@@ -20,6 +20,7 @@ def mock_api():
 def mock_goose_client():
     client = MagicMock()
     client.create_session = AsyncMock(return_value="session_1")
+    client.send_request = AsyncMock(return_value={})
     
     async def mock_prompt(sid, msg):
         yield {"type": "thinking", "text": "let me see"}
