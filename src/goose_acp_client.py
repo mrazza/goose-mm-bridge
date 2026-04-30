@@ -72,9 +72,9 @@ class GooseACPClient:
                 "capabilities": {},
                 "clientInfo": {"name": "goose-mm-bridge", "version": "1.0.0"}
             }), timeout=self.config.rpc_timeout)
-            capabilities = res.get("result", {}).get("capabilities", {})
-            self.sse_supported = capabilities.get("mcp", {}).get("sse", False)
-            self.http_supported = capabilities.get("mcp", {}).get("http", False)
+            capabilities = res.get("result", {}).get("agentCapabilities", {})
+            self.sse_supported = capabilities.get("mcpCapabilities", {}).get("sse", False)
+            self.http_supported = capabilities.get("mcpCapabilities", {}).get("http", False)
             print(f"[{datetime.now()}] Goose ACP initialized. SSE support: {self.sse_supported}, HTTP support: {self.http_supported}")
         except Exception as e:
             print(f"[{datetime.now()}] Failed to initialize Goose ACP: {e}")
@@ -200,6 +200,8 @@ class GooseACPClient:
 
     async def create_session(self) -> str:
         """Creates a new session in the Goose ACP."""
+        await self.ensure_running()
+
         params = {
             "cwd": os.getcwd(),
             "mcpServers": self._get_mcp_servers()
