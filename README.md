@@ -4,7 +4,6 @@
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/mrazza/goose-mm-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/mrazza/goose-mm-bridge/actions/workflows/ci.yml)
 
-
 A bridge that connects [Goose](https://github.com/block/goose) to [Mattermost](https://mattermost.com/), allowing you to interact with your Goose agent directly from your Mattermost channels and direct messages.
 
 ## 🚀 Features
@@ -12,8 +11,8 @@ A bridge that connects [Goose](https://github.com/block/goose) to [Mattermost](h
 - **Seamless Integration**: Chat with Goose as if it were another user on Mattermost.
 - **Session Management**: Maintains conversation context using Mattermost threads.
 - **Multi-user Support**: Multiple users can interact with the bot simultaneously in their own sessions.
-- **OS-Native Isolation**: Optionally map Mattermost users to dedicated Linux accounts for strict security and tool isolation.
-- **ACP Integration**: Communicates with Goose using the Agent Control Protocol (ACP).
+- **OS-Native Isolation**: Map Mattermost users to dedicated Linux accounts for strict security and tool isolation.
+- **MCP Tooling**: Automatically exposes Mattermost capabilities to Goose via the Model Context Protocol (MCP), allowing it to search history, find users, and send messages across channels.
 - **Thinking Transparency**: Stream the agent's thinking process to Mattermost as message attachments.
 - **Interactive Commands**: Use commands like `!stop` to interrupt the agent mid-response.
 
@@ -21,9 +20,20 @@ A bridge that connects [Goose](https://github.com/block/goose) to [Mattermost](h
 
 1. **Mattermost Polling**: The bridge periodically polls the Mattermost API for new posts in channels the bot has joined.
 2. **Session Mapping**: It tracks conversations by mapping the Mattermost `user_id` and `root_id` (thread ID) to a specific Goose ACP session.
-3. **Goose ACP Subprocess**: The bridge spawns `goose acp` as a subprocess and communicates via JSON-RPC over standard input/output.
-4. **Asynchronous Handling**: Uses `asyncio` to handle concurrent messages and streaming responses from Goose.
-5. **Threaded Responses**: Replies are posted back to Mattermost as part of the original thread to maintain clean organization.
+3. **Goose ACP Subprocess**: The bridge spawns `goose acp` as a subprocess and communicates via JSON-RPC.
+4. **Internal MCP Server**: The bridge runs an internal FastMCP server that Goose connects to, providing tools for Mattermost interaction.
+5. **Asynchronous Handling**: Uses `asyncio` to handle concurrent messages and streaming responses from Goose.
+
+## 🛠 MCP Tools for Goose
+
+When interacting with Goose, it has access to the following Mattermost tools:
+- `send_message`: Send messages to any channel or thread.
+- `get_channels`: List available channels.
+- `get_thread_context`: Fetch full history of a thread with user attribution.
+- `search_messages`: Search for content across all accessible teams.
+- `search_users`: Find users by name, username, or email.
+- `get_user_info`: Get detailed profile information for a user.
+- `send_direct_message`: Start or continue a DM with one or more users.
 
 ## 🛡️ Security Model: OS-Native Isolation
 
@@ -44,7 +54,7 @@ The bridge supports user segmentation by mapping Mattermost users to dedicated L
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/block/goose-mm-bridge.git
+   git clone https://github.com/mrazza/goose-mm-bridge.git
    cd goose-mm-bridge
    ```
 
@@ -91,25 +101,28 @@ The bridge is configured via environment variables in the `.env` file:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `MATTERMOST_URL` | The URL of your Mattermost instance (e.g., `mattermost.example.com`) | |
+| `MATTERMOST_URL` | The URL of your Mattermost instance | |
 | `MATTERMOST_TOKEN` | Your Mattermost Bot Access Token | |
 | `MATTERMOST_SCHEME` | `http` or `https` | `https` |
 | `MATTERMOST_PORT` | The port for your Mattermost instance | `443` |
-| `APPROVED_USERS` | Comma-separated list of usernames or user IDs allowed to use the bot | (All allowed) |
-| `USER_MAPPING_FILE` | Path to the JSON file mapping Mattermost users to Linux accounts | `user_mapping.json` |
-| `POLL_INTERVAL` | The frequency (in seconds) to poll Mattermost for new messages | `1` |
+| `APPROVED_USERS` | Comma-separated list of usernames or user IDs allowed | (All allowed) |
+| `USER_MAPPING_FILE` | Path to the JSON file mapping Mattermost users | `user_mapping.json` |
+| `POLL_INTERVAL` | Frequency (seconds) to poll for new messages | `1` |
 | `DEBUG` | Enable verbose logging of JSON-RPC messages | `false` |
-| `GOOSE_THINKING_TRACE` | Stream the agent's thinking process to Mattermost as attachments | `true` |
-| `RPC_TIMEOUT` | Timeout for requests to the Goose subprocess (in seconds) | `600` |
-| `REQUIRE_USER_MAPPING` | If `true`, reject users not found in `user_mapping.json` | `false` |
-| `MAX_SESSIONS` | Maximum number of concurrent sessions to track before pruning old ones | `100` |
+| `GOOSE_THINKING_TRACE` | Stream thinking process as attachments | `true` |
+| `RPC_TIMEOUT` | Timeout for requests to Goose (seconds) | `600` |
+| `REQUIRE_USER_MAPPING` | Reject users not found in mapping file | `false` |
+| `MAX_SESSIONS` | Maximum concurrent sessions before pruning | `100` |
+| `MCP_ENABLED` | Enable the internal MCP server for Goose | `true` |
+| `MCP_HOST` | Host for the internal MCP server | `localhost` |
+| `MCP_PORT` | Port for the internal MCP server | `8080` |
 
 
 ## 🎮 Commands
 
 The bridge supports specific commands that can be typed directly into the Mattermost chat:
 
-- **`!stop`**: Immediately cancels the active prompt in the current thread. This is useful if the agent is stuck in a loop or performing a long-running task you wish to terminate.
+- **`!stop`**: Immediately cancels the active prompt in the current thread.
 
 ## 🏃 Usage
 
