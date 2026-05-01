@@ -223,7 +223,8 @@ class MattermostBridge:
                     }
                     goose_sid = self.sessions[session_key]["id"]
                     # Also prepend context for the fresh retry session
-                    await self._stream_response_to_mattermost(goose, goose_sid, f"{context_msg}\n\n{message}", channel_id, root_id)
+                    retry_context = f"{context_msg} NOTE: The previous session for this thread terminated unexpectedly. Context from earlier in this conversation has been lost, but you can use the IDs above to try to recover history if needed."
+                    await self._stream_response_to_mattermost(goose, goose_sid, f"{retry_context}\n\n{message}", channel_id, root_id)
 
             except Exception as e:
                 print(f"[{datetime.now()}] Error handling message for {session_key}: {e}")
