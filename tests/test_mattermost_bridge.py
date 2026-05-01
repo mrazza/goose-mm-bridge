@@ -14,6 +14,7 @@ def mock_api():
     api.get_me = AsyncMock(return_value={"id": "bot_id", "username": "bot"})
     api.create_post = AsyncMock(return_value={"id": "post_id"})
     api.get_user = AsyncMock(return_value={"username": "user1"})
+    api.get_thread = AsyncMock(return_value={"posts": {}})
     return api
 
 @pytest.fixture
@@ -52,7 +53,8 @@ async def test_handle_message(config, mock_api, mock_goose_client):
         "id": "post_1",
         "user_id": "user_id_1",
         "channel_id": "channel_1",
-        "message": "@bot hello"
+        "message": "@bot hello",
+        "create_at": 1000
     }
     
     # We mock load_user_mapping to avoid file IO
@@ -82,7 +84,8 @@ async def test_handle_message_retry(config, mock_api, mock_goose_client):
         "id": "post_1",
         "user_id": "user_id_1",
         "channel_id": "channel_1",
-        "message": "@bot hello"
+        "message": "@bot hello",
+        "create_at": 1000
     }
 
     # Simulate a failure on first prompt, then success on second
@@ -192,7 +195,7 @@ async def test_concurrency_locking(config, mock_api, mock_goose_client):
         yield {"type": "final", "text": "done"}
     mock_goose_client.prompt = slow_prompt
     
-    post = {"id": "p1", "user_id": "u1", "channel_id": "c1", "message": "@bot hello"}
+    post = {"id": "p1", "user_id": "u1", "channel_id": "c1", "message": "@bot hello", "create_at": 1000}
     
     with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
         # Start two tasks for the same thread
@@ -238,7 +241,7 @@ async def test_user_mapping_edge_cases(config, mock_api):
     # Case 1: Approved user but no mapping
     config.approved_users = ["user1"]
     config.require_user_mapping = True
-    post = {"id": "p1", "user_id": "user1", "channel_id": "c1", "message": "@bot hello"}
+    post = {"id": "p1", "user_id": "user1", "channel_id": "c1", "message": "@bot hello", "create_at": 1000}
     
     with patch('mattermost_bridge.load_user_mapping', return_value={}):
         mock_api.get_user = AsyncMock(return_value={"username": "user1"})
@@ -252,3 +255,63 @@ async def test_user_mapping_edge_cases(config, mock_api):
     with patch('mattermost_bridge.load_user_mapping', return_value={"user1": "linux1"}):
         await bridge._process_post(post, {"c1": {"type": "D"}})
         assert not mock_api.create_post.called
+
+@pytest.mark.asyncio
+async def test_handle_message_with_missed_messages(config, mock_api, mock_goose_client):
+    factory = lambda user: mock_goose_client
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=factory)
+    bridge.bot_mention = "@bot"
+    bridge.bot_id = "bot_id"
+    
+    # 1. First message initializes session
+    post1 = {
+        "id": "post_1", "user_id": "u1", "channel_id": "c1", 
+        "message": "@bot hello", "create_at": 1000
+    }
+    
+    mock_api.get_thread.return_value = {"posts": {"post_1": post1}}
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        await bridge._handle_message(post1, "linux1")
+        
+    session_key = "u1:post_1"
+    assert bridge.sessions[session_key]["last_seen_at"] == 1000
+    
+    # 2. Second message has missed messages in between
+    post2 = {
+        "id": "post_3", "user_id": "u1", "channel_id": "c1", "root_id": "post_1",
+        "message": "@bot follow up", "create_at": 3000
+    }
+    
+    # Someone else replied in between
+    missed_post = {
+        "id": "post_2", "user_id": "u2", "channel_id": "c1", "root_id": "post_1",
+        "message": "I have a question too", "create_at": 2000
+    }
+    
+    mock_api.get_thread.return_value = {
+        "posts": {
+            "post_1": post1,
+            "post_2": missed_post,
+            "post_3": post2
+        }
+    }
+    
+    # Mock user info for the missed message sender
+    async def mock_get_user(uid):
+        if uid == "u2": return {"username": "other_user"}
+        return {"username": "user1"}
+    mock_api.get_user.side_effect = mock_get_user
+    
+    mock_goose_client.prompt.reset_mock()
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        await bridge._handle_message(post2, "linux1")
+        
+    assert mock_goose_client.prompt.called
+    args, _ = mock_goose_client.prompt.call_args
+    prompt_text = args[1]
+    
+    assert "SYSTEM: While you were away" in prompt_text
+    assert "[@other_user]: I have a question too" in prompt_text
+    assert "follow up" in prompt_text
+    assert bridge.sessions[session_key]["last_seen_at"] == 3000

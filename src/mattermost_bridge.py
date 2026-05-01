@@ -165,6 +165,45 @@ class MattermostBridge:
                     await self.api.update_post(thinking_post["id"], resp_msg, props=props)
                 last_update_time = current_time
 
+    async def _get_missed_messages(self, root_id: str, last_seen_at: int, current_post_id: str) -> str:
+        """Fetches messages in the thread that have been posted since last_seen_at."""
+        thread_data = await self.api.get_thread(root_id)
+        if not thread_data or "posts" not in thread_data:
+            return ""
+
+        posts = thread_data["posts"]
+        # Filter posts that are newer than last_seen_at and are not the current post
+        missed = [
+            p for p in posts.values()
+            if p["create_at"] > last_seen_at and p["id"] != current_post_id
+        ]
+        
+        if not missed:
+            return ""
+            
+        # Sort by creation time
+        missed.sort(key=lambda x: x["create_at"])
+        
+        # Get unique user IDs to fetch usernames
+        user_ids = {p["user_id"] for p in missed}
+        user_map = {}
+        for uid in user_ids:
+            if uid == self.bot_id:
+                user_map[uid] = "Goose (You)"
+            else:
+                user_info = await self.api.get_user(uid)
+                user_map[uid] = user_info.get("username", "unknown") if user_info else "unknown"
+
+        context_parts = ["SYSTEM: While you were away, the following messages were posted in this thread:"]
+        for p in missed:
+            username = user_map.get(p["user_id"], "unknown")
+            msg = p["message"].strip()
+            # Clean bot mentions from history to avoid confusion
+            msg = clean_message(msg, self.bot_mention)
+            context_parts.append(f"[@{username}]: {msg}")
+            
+        return "\n".join(context_parts)
+
     async def _handle_message(self, post: dict, linux_user: Optional[str]):
         """Handles an incoming message from Mattermost."""
         sender_id = post["user_id"]
@@ -174,8 +213,12 @@ class MattermostBridge:
             
         channel_id = post["channel_id"]
         root_id = post.get("root_id") or post["id"]
+        post_id = post["id"]
+        create_at = post["create_at"]
         session_key = get_session_key(sender_id, root_id)
-        context_msg = f"SYSTEM: Mattermost Channel ID: {channel_id}, Root Post ID (Thread ID): {root_id}. You can use these IDs with your tools to fetch more context about the current channel/thread if needed."
+        
+        # Base context that is always sent
+        base_context = f"SYSTEM: Mattermost Channel ID: {channel_id}, Root Post ID (Thread ID): {root_id}. You can use these IDs with your tools to fetch more context about the current channel/thread if needed."
 
         self.active_tasks[session_key] = asyncio.current_task()
 
@@ -191,7 +234,6 @@ class MattermostBridge:
                 message = clean_message(message, self.bot_mention)
                 print(f"[{datetime.now()}] User {sender_id} says: {message[:100]}...")
 
-                is_new_session = False
                 if session_key not in self.sessions:
                     print(f"[{datetime.now()}] Creating new Goose session for {session_key}")
                     
@@ -199,17 +241,29 @@ class MattermostBridge:
                     self.sessions[session_key] = {
                         "id": sid,
                         "linux_user": linux_user,
+                        "last_seen_at": 0  # 0 means we'll fetch all history for the first message
                     }
-                    is_new_session = True
 
                 session_data = self.sessions[session_key]
                 goose_sid = session_data["id"]
+                last_seen = session_data["last_seen_at"]
 
-                # Prepend context for the first message in a session to avoid an extra turn
-                prompt_text = f"{context_msg}\n\n{message}" if is_new_session else message
+                # Fetch missed messages to provide thread context
+                missed_context = await self._get_missed_messages(root_id, last_seen, post_id)
+                
+                # Update last_seen_at for this session
+                session_data["last_seen_at"] = create_at
+
+                # Build the prompt. 
+                # If there are missed messages, we include them as a SYSTEM update.
+                full_prompt = base_context
+                if missed_context:
+                    full_prompt += f"\n\n{missed_context}"
+                
+                full_prompt += f"\n\n{message}"
 
                 try:
-                    await self._stream_response_to_mattermost(goose, goose_sid, prompt_text, channel_id, root_id)
+                    await self._stream_response_to_mattermost(goose, goose_sid, full_prompt, channel_id, root_id)
                 except (ValueError, RuntimeError, asyncio.TimeoutError) as e:
                     print(f"[{datetime.now()}] Session {session_key} lost, retrying once: {e}")
                     await self.api.create_post(
@@ -220,10 +274,12 @@ class MattermostBridge:
                     self.sessions[session_key] = {
                         "id": await goose.create_session(),
                         "linux_user": linux_user,
+                        "last_seen_at": create_at
                     }
                     goose_sid = self.sessions[session_key]["id"]
-                    # Also prepend context for the fresh retry session
-                    retry_context = f"{context_msg} NOTE: The previous session for this thread terminated unexpectedly. Context from earlier in this conversation has been lost, but you can use the IDs above to try to recover history if needed."
+                    
+                    # For a retry, we inform them history was lost but provide the IDs and the current message
+                    retry_context = f"{base_context} NOTE: The previous session for this thread terminated unexpectedly. Context from earlier in this conversation has been lost, but you can use the IDs above to try to recover history if needed."
                     await self._stream_response_to_mattermost(goose, goose_sid, f"{retry_context}\n\n{message}", channel_id, root_id)
 
             except Exception as e:
