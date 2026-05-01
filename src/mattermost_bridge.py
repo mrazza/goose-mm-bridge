@@ -208,7 +208,7 @@ class MattermostBridge:
                     self.sessions[session_key] = {
                         "id": sid,
                         "linux_user": linux_user,
-                        "last_seen_at": 0,
+                        "processed_count": 0
                     }
                     is_new_session = True
 
@@ -218,43 +218,28 @@ class MattermostBridge:
                 # Prepend context for the first message in a session to avoid an extra turn
                 prompt_text = f"{context_msg}\n\n{message}" if is_new_session else message
 
-                # Delta-based Context Injection
-                if not is_new_session:
-                    last_seen = session_data.get("last_seen_at", 0)
-                    thread_data = await self.api.get_thread(root_id)
-                    if thread_data and "posts" in thread_data:
-                        posts = thread_data["posts"]
-                        current_post_id = post["id"]
-                        new_messages = []
-                        
-                        # Sort posts by create_at
-                        sorted_thread_posts = sorted(posts.values(), key=lambda x: x["create_at"])
-                        
-                        user_cache = {}
-                        for p in sorted_thread_posts:
-                            if p["create_at"] > last_seen and p["id"] != current_post_id:
-                                uid = p["user_id"]
-                                if uid not in user_cache:
-                                    u_info = await self.api.get_user(uid)
-                                    user_cache[uid] = u_info.get("username", "unknown") if u_info else "unknown"
-                                
-                                username = user_cache[uid]
-                                msg_text = clean_message(p["message"], self.bot_mention)
-                                if msg_text:
-                                    new_messages.append(f"{username}: {msg_text}")
-                        
-                        if new_messages:
-                            context_update = f"SYSTEM: While you were away, the following messages were posted: [{', '.join(new_messages)}]"
-                            if self.config.debug:
-                                print(f"[{datetime.now()}] Injecting delta context for {session_key}")
-                            async for _ in goose.prompt(goose_sid, context_update):
-                                pass
+                # Catch-up Hinting: Compare messages in thread vs processed count
+                thread_size = 0
+                thread_data = await self.api.get_thread(root_id)
+                if thread_data and "posts" in thread_data:
+                    thread_size = len(thread_data["posts"])
+                    processed_count = session_data.get("processed_count", 0)
+                    # New messages are those in the thread excluding the one we are currently processing
+                    new_messages_count = thread_size - processed_count - 1
+                    
+                    if new_messages_count > 0:
+                        hint = f"SYSTEM: There are {new_messages_count} new messages in this thread since your last response. Use your tools if you need to catch up."
+                        print(f"[{datetime.now()}] Injecting catch-up hint for {session_key}: {new_messages_count} new messages")
+                        async for _ in goose.prompt(goose_sid, hint):
+                            pass
                 
-                # Update last_seen_at to the current message's timestamp
+                # Update last_seen_at to the current message's timestamp for compatibility
                 session_data["last_seen_at"] = post["create_at"]
 
                 try:
                     await self._stream_response_to_mattermost(goose, goose_sid, prompt_text, channel_id, root_id)
+                    # Update processed count to include the message we just processed and our response
+                    session_data["processed_count"] = thread_size + 1
                 except (ValueError, RuntimeError, asyncio.TimeoutError) as e:
                     print(f"[{datetime.now()}] Session {session_key} lost, retrying once: {e}")
                     await self.api.create_post(
@@ -265,6 +250,7 @@ class MattermostBridge:
                     self.sessions[session_key] = {
                         "id": await goose.create_session(),
                         "linux_user": linux_user,
+                        "processed_count": 0
                     }
                     goose_sid = self.sessions[session_key]["id"]
                     # Also prepend context for the fresh retry session
