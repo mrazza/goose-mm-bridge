@@ -22,12 +22,15 @@ def mock_goose_client():
     client.create_session = AsyncMock(return_value="session_1")
     client.send_request = AsyncMock(return_value={})
     
-    async def mock_prompt(sid, msg):
+    # We'll use a mock that tracks calls
+    client.prompt = MagicMock()
+    
+    async def mock_prompt_gen(sid, msg):
         yield {"type": "thinking", "text": "let me see"}
         yield {"type": "content", "text": "the answer is 42"}
         yield {"type": "final", "text": "the answer is 42"}
     
-    client.prompt = mock_prompt
+    client.prompt.side_effect = mock_prompt_gen
     return client
 
 @pytest.mark.asyncio
@@ -56,14 +59,58 @@ async def test_handle_message(config, mock_api, mock_goose_client):
     with patch('mattermost_bridge.load_user_mapping', return_value={"user_id_1": "linux_user"}):
         await bridge._handle_message(post, "linux_user")
         
-        # Verify goose was prompted
-        # The prompt is an async generator, so we check if it was called
-        # mock_goose_client.prompt is replaced by our mock_prompt function in the fixture
+        # Verify goose was prompted with combined context
+        assert mock_goose_client.prompt.called
+        args, kwargs = mock_goose_client.prompt.call_args
+        prompt_text = args[1]
+        assert "SYSTEM: Mattermost Channel ID: channel_1" in prompt_text
+        assert "Root Post ID (Thread ID): post_1" in prompt_text
+        assert "hello" in prompt_text
         
         # Verify Mattermost posts were created/updated
         assert mock_api.create_post.called
         # First post is "Thinking..."
         assert mock_api.create_post.call_args_list[0][0][1] == ":thinking_face: **Thinking...**"
+
+@pytest.mark.asyncio
+async def test_handle_message_retry(config, mock_api, mock_goose_client):
+    factory = lambda user: mock_goose_client
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=factory)
+    bridge.bot_mention = "@bot"
+    
+    post = {
+        "id": "post_1",
+        "user_id": "user_id_1",
+        "channel_id": "channel_1",
+        "message": "@bot hello"
+    }
+
+    # Simulate a failure on first prompt, then success on second
+    call_count = 0
+    async def mock_prompt_with_fail(sid, msg):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("Goose connection lost")
+        yield {"type": "final", "text": "retry success"}
+        
+    mock_goose_client.prompt.side_effect = mock_prompt_with_fail
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"user_id_1": "linux_user"}):
+        await bridge._handle_message(post, "linux_user")
+        
+        # Should have called prompt twice
+        assert mock_goose_client.prompt.call_count == 2
+        
+        # Second call should have the retry context
+        args, kwargs = mock_goose_client.prompt.call_args
+        prompt_text = args[1]
+        assert "NOTE: The previous session for this thread terminated unexpectedly" in prompt_text
+        assert "hello" in prompt_text
+        
+        # Verify we informed the user about the reset
+        reset_post_call = [c for c in mock_api.create_post.call_args_list if "Notice: Connection to Goose was reset" in str(c)]
+        assert len(reset_post_call) > 0
 
 @pytest.mark.asyncio
 async def test_session_pruning(config, mock_api, mock_goose_client):
