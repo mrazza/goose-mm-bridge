@@ -236,8 +236,7 @@ class MattermostBridge:
                         print(f"[{datetime.now()}] Merging catch-up hint for {session_key}: {new_messages_count} new messages")
                     prompt_text = f"{hint}\n\n{prompt_text}"
                 
-                # Update last_seen_at to the current message's timestamp for compatibility
-                session_data["last_seen_at"] = post["create_at"]
+
 
                 try:
                     await self._stream_response_to_mattermost(goose, goose_sid, prompt_text, channel_id, root_id)
