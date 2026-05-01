@@ -15,6 +15,7 @@ def mock_api():
     api.create_post = AsyncMock(return_value={"id": "post_id"})
     api.update_post = AsyncMock()
     api.get_user = AsyncMock(return_value={"username": "user1"})
+    api.get_thread = AsyncMock(return_value={"posts": {}})
     return api
 
 @pytest.fixture
@@ -53,7 +54,8 @@ async def test_handle_message(config, mock_api, mock_goose_client):
         "id": "post_1",
         "user_id": "user_id_1",
         "channel_id": "channel_1",
-        "message": "@bot hello"
+        "message": "@bot hello",
+        "create_at": 1000
     }
     
     # We mock load_user_mapping to avoid file IO
@@ -173,7 +175,7 @@ async def test_require_user_mapping(config, mock_api):
     bridge.bot_mention = "@bot"
     
     post = {
-        "id": "p1", "user_id": "u1", "channel_id": "c1", "message": "@bot hello"
+        "id": "p1", "user_id": "u1", "channel_id": "c1", "message": "@bot hello", "create_at": 1000
     }
     
     with patch('mattermost_bridge.load_user_mapping', return_value={}):
@@ -193,7 +195,7 @@ async def test_concurrency_locking(config, mock_api, mock_goose_client):
         yield {"type": "final", "text": "done"}
     mock_goose_client.prompt = slow_prompt
     
-    post = {"id": "p1", "user_id": "u1", "channel_id": "c1", "message": "@bot hello"}
+    post = {"id": "p1", "user_id": "u1", "channel_id": "c1", "message": "@bot hello", "create_at": 1000}
     
     with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
         # Start two tasks for the same thread
