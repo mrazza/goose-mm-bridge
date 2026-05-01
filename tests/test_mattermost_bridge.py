@@ -341,10 +341,11 @@ async def test_catchup_hint_merged_prompt(config, mock_api, mock_goose_client):
         await bridge._handle_message(post, "linux1")
         
         # Verify prompt text contains the catchup hint
-        # 10 (total) - 4 (processed) - 1 (current) = 5 new
+        # thread_size=10, last_processed=6 (from previous step), current_msg=1.
+        # new_messages = 10 - 6 - 1 = 3.
         args, kwargs = mock_goose_client.prompt.call_args
         prompt_text = args[1]
-        assert "SYSTEM: There are 5 new messages" in prompt_text
+        assert "SYSTEM: There are 3 new messages" in prompt_text
         
         # Verify processed_count was updated (thread_size + 1)
         assert bridge.sessions["u1:root1"]["processed_count"] == 11
