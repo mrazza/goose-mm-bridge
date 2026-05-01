@@ -198,7 +198,7 @@ class MattermostBridge:
                         "linux_user": linux_user,
                     }
                     # Inform the agent about the current context
-                    context_msg = f"SYSTEM: You are participating in a Mattermost thread. You automatically receive messages directed at you from your primary user. Channel ID: {channel_id}, Root Post ID (Thread ID): {root_id}. You can use these IDs with your tools to fetch more context if needed."
+                    context_msg = f"SYSTEM: Mattermost Channel ID: {channel_id}, Root Post ID (Thread ID): {root_id}. You can use these IDs with your tools to fetch more context about the current channel/thread if needed."
                     async for _ in goose.prompt(sid, context_msg):
                         pass
 
