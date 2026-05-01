@@ -281,3 +281,53 @@ async def test_thinking_trace_truncation(config, mock_api):
     assert "... (truncated) ..." in last_trace
     assert len(last_trace) < 10000
 
+@pytest.mark.asyncio
+async def test_catchup_hint_merged_prompt(config, mock_api, mock_goose_client):
+    factory = lambda user: mock_goose_client
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=factory)
+    bridge.bot_mention = "@bot"
+    
+    # Setup session with processed_count = 1
+    bridge.sessions["u1:root1"] = {
+        "id": "session_1",
+        "linux_user": "linux1",
+        "processed_count": 1
+    }
+    bridge.goose_clients["linux1"] = mock_goose_client
+    
+    # Mock thread with 3 posts (including the current one)
+    # processed_count = 1 means 1 message was already processed.
+    # thread_size = 3. 
+    # new_messages_count = 3 - 1 - 1 = 1.
+    mock_api.get_thread = AsyncMock(return_value={
+        "posts": {
+            "p1": {"id": "p1", "create_at": 1000},
+            "p2": {"id": "p2", "create_at": 1100},
+            "p3": {"id": "p3", "create_at": 1200}
+        }
+    })
+    
+    post = {
+        "id": "p3",
+        "user_id": "u1",
+        "channel_id": "c1",
+        "root_id": "root1",
+        "message": "@bot hello",
+        "create_at": 1200
+    }
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        await bridge._handle_message(post, "linux1")
+        
+        # Verify prompt text contains both the context and the catchup hint
+        assert mock_goose_client.prompt.called
+        args, kwargs = mock_goose_client.prompt.call_args
+        prompt_text = args[1]
+        
+        assert "SYSTEM: There are 1 new messages" in prompt_text
+        assert "hello" in prompt_text
+        # Note: context_msg is only in the first message of a session
+        assert "SYSTEM: Mattermost Channel ID: c1" not in prompt_text
+        
+        # Verify processed_count was updated (thread_size + 1)
+        assert bridge.sessions["u1:root1"]["processed_count"] == 4

@@ -229,9 +229,9 @@ class MattermostBridge:
                     
                     if new_messages_count > 0:
                         hint = f"SYSTEM: There are {new_messages_count} new messages in this thread since your last response. Use your tools if you need to catch up."
-                        print(f"[{datetime.now()}] Injecting catch-up hint for {session_key}: {new_messages_count} new messages")
-                        async for _ in goose.prompt(goose_sid, hint):
-                            pass
+                        if self.config.debug:
+                            print(f"[{datetime.now()}] Merging catch-up hint for {session_key}: {new_messages_count} new messages")
+                        prompt_text = f"{hint}\n\n{prompt_text}"
                 
                 # Update last_seen_at to the current message's timestamp for compatibility
                 session_data["last_seen_at"] = post["create_at"]
