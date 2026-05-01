@@ -349,3 +349,33 @@ async def test_catchup_hint_merged_prompt(config, mock_api, mock_goose_client):
         
         # Verify processed_count was updated (thread_size + 1)
         assert bridge.sessions["u1:root1"]["processed_count"] == 11
+@pytest.mark.asyncio
+async def test_thread_counter_initialization(config, mock_api, mock_goose_client):
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    bridge.bot_mention = "@bot"
+    
+    # Message with no root_id (start of thread)
+    post = {"id": "p1", "user_id": "u1", "channel_id": "c1", "message": "@bot hello", "create_at": 1000}
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        # process_post should initialize counter to 1
+        await bridge._process_post(post, {"c1": {"type": "D"}})
+        assert bridge.thread_counters["p1"] == 1
+        
+        # handle_message should NOT call get_thread because counter exists
+        mock_api.get_thread.reset_mock()
+        await bridge._handle_message(post, "linux1")
+        assert not mock_api.get_thread.called
+
+@pytest.mark.asyncio
+async def test_lazy_prime_failure(config, mock_api, mock_goose_client):
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    bridge.bot_mention = "@bot"
+    mock_api.get_thread = AsyncMock(return_value=None) # Simulate failure
+    
+    post = {"id": "p1", "user_id": "u1", "channel_id": "c1", "root_id": "r1", "message": "@bot hello", "create_at": 1000}
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        # Should not crash, should default to 1
+        await bridge._handle_message(post, "linux1")
+        assert bridge.thread_counters["r1"] == 1
