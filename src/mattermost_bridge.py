@@ -157,7 +157,7 @@ class MattermostBridge:
                     # While thinking/streaming
                     if self.config.goose_thinking_trace_simplified and last_thinking_text:
                          # Simplified mode: Thinking... [Last action]
-                         resp_msg = f"{full_response or THINKING_MSG} *[{last_thinking_text}]*"
+                         resp_msg = full_response or f"{THINKING_MSG} *[{last_thinking_text}]*"
                     else:
                          resp_msg = full_response or THINKING_MSG
                 else:
