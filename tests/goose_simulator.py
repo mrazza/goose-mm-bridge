@@ -36,15 +36,9 @@ async def simulate_goose_behavior(mock_process: MockProcess, session_id: str = "
             "result": {"sessionId": session_id}
         })
 
-        # 3. Handle the system context prompt (id: 3)
+        # 3. Handle the prompt (which now includes both context and user message)
         await asyncio.sleep(0.05)
-        mock_process.feed_stdout({
-            "jsonrpc": "2.0", "id": 3, 
-            "result": {"status": "completed"}
-        })
         
-        # 4. session/prompt chunks for the actual user message (id: 4)
-        await asyncio.sleep(0.05)
         # Thinking chunk
         mock_process.feed_stdout({
             "jsonrpc": "2.0", "method": "session/update",
@@ -61,9 +55,10 @@ async def simulate_goose_behavior(mock_process: MockProcess, session_id: str = "
                 "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": final_text}}
             }
         })
-        # Final response
+        
+        # Final response for the prompt (id: 3)
         mock_process.feed_stdout({
-            "jsonrpc": "2.0", "id": 4, 
+            "jsonrpc": "2.0", "id": 3, 
             "result": {"status": "completed"}
         })
     except Exception as e:
