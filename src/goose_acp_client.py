@@ -325,7 +325,7 @@ class GooseACPClient:
         elif session_update == "tool_call_update":
             title = update.get("title")
             if title:
-                return {"type": "thinking", "text": f"\n**Updated**: `{title}`\n"}
+                return {"type": "thinking", "text": title}
         
         if self.config.debug:
             print(f"DEBUG: Unknown or unhandled chunk format: {chunk}")
