@@ -85,7 +85,8 @@ async def test_handle_message_retry(config, mock_api, mock_goose_client):
         "id": "post_1",
         "user_id": "user_id_1",
         "channel_id": "channel_1",
-        "message": "@bot hello"
+        "message": "@bot hello",
+        "create_at": 1000
     }
 
     # Simulate a failure on first prompt, then success on second
