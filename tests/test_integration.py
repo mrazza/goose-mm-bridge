@@ -25,6 +25,7 @@ async def test_bridge_integration_flow_with_goose_process():
     mock_api.get_my_teams = AsyncMock(return_value=[{"id": "team_1"}])
     mock_api.get_my_channels = AsyncMock(return_value=[{"id": "chan_1", "type": "O"}])
     mock_api.get_user = AsyncMock(return_value={"id": "user_1", "username": "alice"})
+    mock_api.get_thread = AsyncMock(return_value={"posts": {}})
     
     test_post = {
         "id": "post_123",
