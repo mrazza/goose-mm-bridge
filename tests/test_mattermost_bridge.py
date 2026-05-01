@@ -13,6 +13,7 @@ def mock_api():
     api = MagicMock()
     api.get_me = AsyncMock(return_value={"id": "bot_id", "username": "bot"})
     api.create_post = AsyncMock(return_value={"id": "post_id"})
+    api.update_post = AsyncMock()
     api.get_user = AsyncMock(return_value={"username": "user1"})
     return api
 
@@ -252,3 +253,28 @@ async def test_user_mapping_edge_cases(config, mock_api):
     with patch('mattermost_bridge.load_user_mapping', return_value={"user1": "linux1"}):
         await bridge._process_post(post, {"c1": {"type": "D"}})
         assert not mock_api.create_post.called
+
+
+@pytest.mark.asyncio
+async def test_thinking_trace_truncation(config, mock_api):
+    client = MagicMock()
+    async def long_thinking_gen(sid, msg):
+        yield {"type": "thinking", "text": "A" * 12000}
+        yield {"type": "final", "text": "done"}
+    
+    client.prompt.side_effect = long_thinking_gen
+    bridge = MattermostBridge(api=mock_api, config=config)
+    
+    # Ensure full trace is used (not simplified)
+    config.goose_thinking_trace_simplified = False
+    
+    await bridge._stream_response_to_mattermost(client, "sid", "msg", "cid", "rid")
+    
+    # Check that update_post was called with truncated attachments
+    update_calls = [c for c in mock_api.update_post.call_args_list if "attachments" in c[1].get("props", {})]
+    assert len(update_calls) > 0
+    
+    last_trace = update_calls[-1][1]["props"]["attachments"][0]["text"]
+    assert "... (truncated) ..." in last_trace
+    assert len(last_trace) < 10000
+

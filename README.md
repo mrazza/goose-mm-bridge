@@ -110,6 +110,7 @@ The bridge is configured via environment variables in the `.env` file:
 | `POLL_INTERVAL` | How often (in seconds) the bridge checks for new messages. | `1` |
 | `DEBUG` | Set to `true` to see detailed JSON-RPC logs for troubleshooting. | `false` |
 | `GOOSE_THINKING_TRACE` | When enabled, the agent's internal "thinking" steps are shown as message attachments. | `true` |
+| `GOOSE_THINKING_TRACE_SIMPLIFIED` | When enabled, shows a compact "Thinking... [Last action]" status instead of full attachments. | `true` |
 | `RPC_TIMEOUT` | Seconds to wait for Goose to respond before timing out. | `600` |
 | `REQUIRE_USER_MAPPING` | If `true`, only users explicitly listed in the mapping file can use the bot. | `false` |
 | `MAX_SESSIONS` | The maximum number of active thread contexts to keep before recycling. | `100` |
