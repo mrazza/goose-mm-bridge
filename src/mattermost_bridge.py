@@ -188,6 +188,7 @@ class MattermostBridge:
         async with self.session_locks[session_key]:
             try:
                 message = clean_message(message, self.bot_mention)
+                print(f"[{datetime.now()}] User {sender_id} says: {message[:100]}...")
 
                 if session_key not in self.sessions:
                     print(f"[{datetime.now()}] Creating new Goose session for {session_key}")
@@ -204,7 +205,6 @@ class MattermostBridge:
 
                 session_data = self.sessions[session_key]
                 goose_sid = session_data["id"]
-                print(f"[{datetime.now()}] User {sender_id} says: {message[:100]}...")
 
                 try:
                     await self._stream_response_to_mattermost(goose, goose_sid, message, channel_id, root_id)
