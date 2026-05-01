@@ -15,6 +15,7 @@ class Config:
     poll_interval: int = int(os.getenv("POLL_INTERVAL", "1"))
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
     goose_thinking_trace: bool = os.getenv("GOOSE_THINKING_TRACE", "true").lower() == "true"
+    goose_thinking_trace_simplified: bool = os.getenv("GOOSE_THINKING_TRACE_SIMPLIFIED", "false").lower() == "true"
     rpc_timeout: int = int(os.getenv("RPC_TIMEOUT", "600"))
     max_sessions: int = int(os.getenv("MAX_SESSIONS", "100"))
     user_mapping_file: str = os.getenv("USER_MAPPING_FILE", "user_mapping.json")

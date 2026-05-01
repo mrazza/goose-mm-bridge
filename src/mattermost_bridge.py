@@ -120,6 +120,7 @@ class MattermostBridge:
         thinking_post = None
         full_response = ""
         thinking_trace = ""
+        last_thinking_text = ""
         last_update_time = 0
 
         # Create an initial thinking post to show immediate feedback
@@ -129,8 +130,10 @@ class MattermostBridge:
         async for update in goose.prompt(sid, msg):
             if update["type"] == "thinking":
                 thinking_trace += update["text"]
+                last_thinking_text = update["text"].strip()
             elif update["type"] == "tool":
                 thinking_trace += f"\n\n**Using tool**: `{update['name']}`\n"
+                last_thinking_text = f"Using tool: {update['name']}"
 
             if len(thinking_trace) > 10000:
                 thinking_trace = "... (truncated) ...\n" + thinking_trace[-8000:]
@@ -149,15 +152,22 @@ class MattermostBridge:
             if should_update:
                 resp_msg = ""
                 props = {}
+                
+                # Determine the message content
                 if update["type"] != "final":
-                    # Show content if available, otherwise "Thinking..."
-                    resp_msg = full_response or THINKING_MSG
-                    if self.config.goose_thinking_trace and thinking_trace:
-                        props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
+                    # While thinking/streaming
+                    if self.config.goose_thinking_trace_simplified and last_thinking_text:
+                         # Simplified mode: Thinking... [Last action]
+                         resp_msg = f"{full_response or THINKING_MSG} *[{last_thinking_text}]*"
+                    else:
+                         resp_msg = full_response or THINKING_MSG
                 else:
+                    # Final response
                     resp_msg = full_response
-                    if self.config.goose_thinking_trace and thinking_trace:
-                        props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
+
+                # Determine if we add attachments
+                if self.config.goose_thinking_trace and thinking_trace and not self.config.goose_thinking_trace_simplified:
+                    props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
 
                 if not thinking_post:
                     thinking_post = await self.api.create_post(channel_id, resp_msg, root_id=root_id, props=props)
