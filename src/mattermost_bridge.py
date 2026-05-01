@@ -133,7 +133,6 @@ class MattermostBridge:
                 last_thinking_text = update["text"].strip()
             elif update["type"] == "tool":
                 thinking_trace += f"\n\n**Using tool**: `{update['name']}`\n"
-                last_thinking_text = f"Using tool: {update['name']}"
 
             if len(thinking_trace) > 10000:
                 thinking_trace = "... (truncated) ...\n" + thinking_trace[-8000:]
