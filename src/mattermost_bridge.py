@@ -129,7 +129,7 @@ class MattermostBridge:
 
         async for update in goose.prompt(sid, msg):
             if update["type"] == "thinking":
-                thinking_trace += f"\n\n**Working**: {update["text"]}"
+                thinking_trace += f"\n\n**Working**: {update['text']}"
                 last_thinking_text = update["text"].strip()
             elif update["type"] == "tool":
                 thinking_trace += f"\n\n**Using tool**: `{update['name']}`\n"
