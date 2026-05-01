@@ -379,3 +379,20 @@ async def test_lazy_prime_failure(config, mock_api, mock_goose_client):
         # Should not crash, should default to 1
         await bridge._handle_message(post, "linux1")
         assert bridge.thread_counters["r1"] == 1
+@pytest.mark.asyncio
+async def test_ignore_whitespace_only_messages(config, mock_api, mock_goose_client):
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    bridge.bot_mention = "@bot"
+    
+    # Message with only spaces
+    post = {"id": "p1", "user_id": "u1", "channel_id": "c1", "message": "   ", "create_at": 1000}
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        # Should return early and NOT increment counter or prompt goose
+        await bridge._process_post(post, {"c1": {"type": "D"}})
+        assert "p1" not in bridge.thread_counters
+        assert not mock_api.get_user.called
+        
+        # Now try a direct handle_message call with spaces
+        await bridge._handle_message(post, "linux1")
+        assert not mock_goose_client.prompt.called
