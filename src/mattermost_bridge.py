@@ -175,6 +175,7 @@ class MattermostBridge:
         channel_id = post["channel_id"]
         root_id = post.get("root_id") or post["id"]
         session_key = get_session_key(sender_id, root_id)
+        context_msg = f"SYSTEM: Mattermost Channel ID: {channel_id}, Root Post ID (Thread ID): {root_id}. You can use these IDs with your tools to fetch more context about the current channel/thread if needed."
 
         self.active_tasks[session_key] = asyncio.current_task()
 
@@ -190,6 +191,7 @@ class MattermostBridge:
                 message = clean_message(message, self.bot_mention)
                 print(f"[{datetime.now()}] User {sender_id} says: {message[:100]}...")
 
+                is_new_session = False
                 if session_key not in self.sessions:
                     print(f"[{datetime.now()}] Creating new Goose session for {session_key}")
                     
@@ -198,16 +200,16 @@ class MattermostBridge:
                         "id": sid,
                         "linux_user": linux_user,
                     }
-                    # Inform the agent about the current context
-                    context_msg = f"SYSTEM: Mattermost Channel ID: {channel_id}, Root Post ID (Thread ID): {root_id}. You can use these IDs with your tools to fetch more context about the current channel/thread if needed."
-                    async for _ in goose.prompt(sid, context_msg):
-                        pass
+                    is_new_session = True
 
                 session_data = self.sessions[session_key]
                 goose_sid = session_data["id"]
 
+                # Prepend context for the first message in a session to avoid an extra turn
+                prompt_text = f"{context_msg}\n\n{message}" if is_new_session else message
+
                 try:
-                    await self._stream_response_to_mattermost(goose, goose_sid, message, channel_id, root_id)
+                    await self._stream_response_to_mattermost(goose, goose_sid, prompt_text, channel_id, root_id)
                 except (ValueError, RuntimeError, asyncio.TimeoutError) as e:
                     print(f"[{datetime.now()}] Session {session_key} lost, retrying once: {e}")
                     await self.api.create_post(
@@ -220,7 +222,8 @@ class MattermostBridge:
                         "linux_user": linux_user,
                     }
                     goose_sid = self.sessions[session_key]["id"]
-                    await self._stream_response_to_mattermost(goose, goose_sid, message, channel_id, root_id)
+                    # Also prepend context for the fresh retry session
+                    await self._stream_response_to_mattermost(goose, goose_sid, f"{context_msg}\n\n{message}", channel_id, root_id)
 
             except Exception as e:
                 print(f"[{datetime.now()}] Error handling message for {session_key}: {e}")
