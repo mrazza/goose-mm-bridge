@@ -49,45 +49,45 @@ class MattermostMCPServer:
                 page: Optional page number when using limit.
             """
             all_posts_dict = {}
+            from_post = ""
             
-            if limit > 0:
-                # Fetch a specific page with a specific limit
+            # We fetch the thread in batches to ensure we get the full history.
+            # We use direction="down" starting from the root_id to get all replies.
+            while True:
                 thread = await self.bridge.api.get_thread(root_id,
-                                                         per_page=limit,
-                                                         page=page)
-                if thread and "posts" in thread:
-                    all_posts_dict = thread["posts"]
-            else:
-                # Fetch the entire thread history (up to a safety limit)
-                current_page = 0
-                while True:
-                    # Passing per_page=0 uses the Mattermost default (usually 60)
-                    thread = await self.bridge.api.get_thread(root_id,
-                                                             per_page=0,
-                                                             page=current_page)
-                    if not thread or "posts" not in thread or not thread["posts"]:
-                        break
+                                                         per_page=60,
+                                                         from_post=from_post,
+                                                         direction="down")
+                if not thread or "posts" not in thread or not thread["posts"]:
+                    break
+                
+                all_posts_dict.update(thread["posts"])
+                
+                if not thread.get("has_next", False):
+                    break
                     
-                    all_posts_dict.update(thread["posts"])
-                    
-                    # Since we use per_page=0 (default), we don't know the exact limit
-                    # but we can stop if we get no new posts or an empty order.
-                    order = thread.get("order", [])
-                    if not order:
-                        break
-                        
-                    # Also stop if we've already seen all these posts (unexpected but safe)
-                    # or if there are no more pages
-                    if not thread.get("has_next", False):
-                        break
-                    
-                    current_page += 1
+                order = thread.get("order", [])
+                if not order:
+                    break
+                from_post = order[-1]
 
             if not all_posts_dict:
                 return "Thread not found or empty"
 
             posts = sorted(all_posts_dict.values(),
                            key=lambda x: x["create_at"])
+
+            # Handle limit and page
+            if limit > 0:
+                # Page 0 is the most recent slice
+                start = len(posts) - (page + 1) * limit
+                end = len(posts) - page * limit
+                if end <= 0:
+                    return "No more messages"
+                posts = posts[max(0, start):end]
+
+            if not posts:
+                return "No messages found in the specified range"
 
             # Fetch usernames for attribution
             user_ids = list(set(p["user_id"] for p in posts))

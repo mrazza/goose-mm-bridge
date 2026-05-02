@@ -83,8 +83,11 @@ async def test_call_tool_get_thread_context(mcp_server, mock_bridge):
     assert len(result) == 1
     assert "[Sender: @user_u1] first" in result[0].text
     assert "[Sender: @user_u2] second" in result[0].text
-    # Now called with per_page=0, page=0 by default in the pagination loop
-    mock_bridge.api.get_thread.assert_any_call("r1", per_page=0, page=0)
+    # Now called with per_page=60, from_post="", direction="down" by default in the pagination loop
+    mock_bridge.api.get_thread.assert_any_call("r1",
+                                               per_page=60,
+                                               from_post="",
+                                               direction="down")
 
 
 @pytest.mark.asyncio
