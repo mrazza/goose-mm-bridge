@@ -371,13 +371,14 @@ async def test_thinking_trace_truncation(config, mock_api):
     assert len(last_trace) < 10000
 @pytest.mark.asyncio
 async def test_thread_counter_consistency_with_empty_messages(config, mock_api, mock_goose_client):
-    """Ensure that empty messages are ignored both in priming and incremental counting."""
+    """Ensure that empty messages are ignored both in priming and incremental counting, 
+    and do not trigger catch-up hints."""
     factory = lambda user: mock_goose_client
     bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=factory)
     bridge.bot_mention = "@bot"
     bridge.config.approved_users = []
     
-    # Mock history: thread has 3 messages, but p2 is whitespace-only
+    # 1. Priming Turn: Thread has p1(real), p2(empty), p3(mention)
     mock_api.get_thread = AsyncMock(return_value={
         "posts": {
             "p1": {"id": "p1", "user_id": "u1", "message": "hello"},
@@ -386,20 +387,42 @@ async def test_thread_counter_consistency_with_empty_messages(config, mock_api, 
         }
     })
     
-    post = {"id": "p3", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "@bot check"}
+    post3 = {"id": "p3", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "@bot check"}
     
     with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
-        # Priming turn
-        await bridge._process_post(post, {"c1": {"type": "O"}})
+        await bridge._process_post(post3, {"c1": {"type": "O"}})
         await wait_for_bridge(bridge)
         
-        # Should only count p1 and p3 (2 messages)
+        # Verify: Should only count p1 and p3 (2 messages). 
+        # Joined with 1 earlier message (p1).
         assert bridge.thread_counters["root1"] == 2
+        args, _ = mock_goose_client.prompt.call_args
+        assert "joined an existing thread with 1 earlier messages" in args[1]
         
-        # Incremental turn: p4 is empty
+        # 2. Incremental Turn: p4 is empty. Should not trigger any hint for next prompt p5.
         await bridge._process_post({"id": "p4", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": " "}, {"c1": {"type": "O"}})
         assert bridge.thread_counters["root1"] == 2
         
-        # Incremental turn: p5 has content
-        await bridge._process_post({"id": "p5", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "content"}, {"c1": {"type": "O"}})
+        post5 = {"id": "p5", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "@bot again"}
+        await bridge._process_post(post5, {"c1": {"type": "O"}})
+        await wait_for_bridge(bridge)
+        
+        # Verify: thread_size=3 (p1, p3, p5). processed_count was 2 (p1, p3). 
+        # new_messages = 3 - 2 - 1 = 0.
+        # Since had_catchup_hint was True from Prompt 1, it should send the "caught up" signal.
+        args, _ = mock_goose_client.prompt.call_args
+        assert "SYSTEM: You are now caught up" in args[1]
         assert bridge.thread_counters["root1"] == 3
+        
+        # 3. Incremental Turn: p6 is empty. Next prompt p7 should have NO SYSTEM HINT at all.
+        await bridge._process_post({"id": "p6", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "\n\t"}, {"c1": {"type": "O"}})
+        assert bridge.thread_counters["root1"] == 3
+        
+        post7 = {"id": "p7", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "@bot last"}
+        await bridge._process_post(post7, {"c1": {"type": "O"}})
+        await wait_for_bridge(bridge)
+        
+        # Verify: No hint because p6 was ignored and we were already caught up.
+        args, _ = mock_goose_client.prompt.call_args
+        assert "SYSTEM:" not in args[1]
+        assert "last" in args[1]
