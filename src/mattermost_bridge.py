@@ -210,7 +210,9 @@ class MattermostBridge:
                         "id": sid,
                         "linux_user": linux_user,
                         "processed_count": 0,
-                        "had_catchup_hint": False
+                        # We mark the catchup hint to true so we clarify in a new thread whether
+                        # any messages were missed.
+                        "had_catchup_hint": True
                     }
                     is_new_session = True
 

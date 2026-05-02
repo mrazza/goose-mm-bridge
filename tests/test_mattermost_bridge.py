@@ -145,7 +145,7 @@ async def test_no_catchup_needed_when_synced(config, mock_api, mock_goose_client
         prompt_text = args[1]
         assert "joined an existing thread" not in prompt_text
         assert "since your last response" not in prompt_text
-        assert "You are now caught up" not in prompt_text
+        assert "You are now caught up" in prompt_text
 
 @pytest.mark.asyncio
 async def test_session_pruning(config, mock_api, mock_goose_client):
