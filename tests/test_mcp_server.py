@@ -110,7 +110,10 @@ async def test_call_tool_search_messages(mcp_server, mock_bridge):
 
     assert len(result) == 1
     assert "found it" in result[0].text
-    mock_bridge.api.search_posts.assert_called_once_with("t1", "query")
+    mock_bridge.api.search_posts.assert_called_once_with("t1",
+                                                        "query",
+                                                        page=0,
+                                                        per_page=60)
 
 
 @pytest.mark.asyncio

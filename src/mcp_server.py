@@ -117,11 +117,15 @@ class MattermostMCPServer:
             return "\n".join(formatted)
 
         @self.mcp.tool()
-        async def search_messages(terms: str) -> str:
+        async def search_messages(terms: str,
+                                  page: int = 0,
+                                  per_page: int = 60) -> str:
             """Search for messages across Mattermost.
             
             Args:
                 terms: Search terms.
+                page: Optional page number (defaults to 0).
+                per_page: Optional number of results per page (defaults to 60).
             """
             teams = await self.bridge.api.get_my_teams()
             if not teams:
@@ -129,7 +133,10 @@ class MattermostMCPServer:
 
             all_results = []
             for team in teams:
-                results = await self.bridge.api.search_posts(team["id"], terms)
+                results = await self.bridge.api.search_posts(team["id"],
+                                                             terms,
+                                                             page=page,
+                                                             per_page=per_page)
                 if results and "posts" in results:
                     all_results.extend(results["posts"].values())
 
@@ -138,7 +145,7 @@ class MattermostMCPServer:
 
             all_results.sort(key=lambda x: x["create_at"], reverse=True)
             formatted = []
-            for p in all_results[:20]:
+            for p in all_results[:per_page]:
                 formatted.append(
                     f"[Post ID: {p['id']}] [Channel ID: {p['channel_id']}] {p['message']}"
                 )

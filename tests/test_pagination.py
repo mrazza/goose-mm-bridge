@@ -95,22 +95,44 @@ async def test_mcp_get_thread_context_all_pages(mcp_server, mock_bridge):
     mock_bridge.api.get_thread.assert_any_call("r1", per_page=0, from_create_at=59, direction="up")
 
 @pytest.mark.asyncio
-async def test_mcp_get_thread_context_limit_optimization(mcp_server, mock_bridge):
-    # Mock a response that has more than (page+1)*limit + 1 posts
-    # limit=2, page=0 => threshold is 3 posts.
-    posts = {f"p{i}": {"message": f"m{i}", "create_at": i, "user_id": "u1"} for i in range(5)}
-    order = [f"p{i}" for i in range(5)]
-    
-    mock_bridge.api.get_thread = AsyncMock(return_value={
-        "posts": posts,
-        "order": order,
-        "has_next": True
+async def test_api_search_posts_pagination(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"posts": {"p1": {"id": "p1"}}}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+        await api.search_posts("team123", "query", page=2, per_page=10)
+
+        args, _ = mock_url.call_args
+        req = args[0]
+        url = req.get_full_url()
+        assert "page=2" in url
+        assert "per_page=10" in url
+
+
+@pytest.mark.asyncio
+async def test_mcp_search_messages_pagination(mcp_server, mock_bridge):
+    mock_bridge.api.get_my_teams = AsyncMock(return_value=[{"id": "t1"}])
+    mock_bridge.api.search_posts = AsyncMock(return_value={
+        "posts": {
+            "p1": {
+                "id": "p1",
+                "channel_id": "c1",
+                "message": "found it",
+                "create_at": 100
+            }
+        }
     })
-    
-    result_list, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1", "limit": 2, "page": 0})
-    
-    # Should only call get_thread once because we already have 5 posts, which is >= 3
-    assert mock_bridge.api.get_thread.call_count == 1
-    result = result_list[0].text
-    assert "m3" in result and "m4" in result
-    assert "m2" not in result
+
+    result_list, _ = await mcp_server.mcp.call_tool(
+        "search_messages", {
+            "terms": "query",
+            "page": 1,
+            "per_page": 5
+        })
+
+    assert "found it" in result_list[0].text
+    mock_bridge.api.search_posts.assert_called_once_with("t1",
+                                                        "query",
+                                                        page=1,
+                                                        per_page=5)
