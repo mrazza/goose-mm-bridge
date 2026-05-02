@@ -41,7 +41,7 @@ class MattermostMCPServer:
         async def get_thread_context(root_id: str,
                                      limit: int = 0,
                                      page: int = 0) -> str:
-            """Fetch the history of a thread.
+            """Fetch the history of a thread starting from the root post.
             
             Args:
                 root_id: The ID of the thread root post.
@@ -66,7 +66,7 @@ class MattermostMCPServer:
                 all_posts_dict.update(thread["posts"])
                 
                 # If we got everything there's no more pages so we're done
-                if not thread.get("has_next", False):
+                if per_page == 0 or not thread.get("has_next", False):
                     break
                 
                 # If we are paginating, but we already have enough for the requested page
