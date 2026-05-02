@@ -65,8 +65,8 @@ class MattermostMCPServer:
                 
                 all_posts_dict.update(thread["posts"])
                 
-                # If we got everything (per_page=0) or there's no more pages
-                if per_page == 0 or not thread.get("has_next", False):
+                # If we got everything there's no more pages so we're done
+                if not thread.get("has_next", False):
                     break
                 
                 # If we are paginating, but we already have enough for the requested page
