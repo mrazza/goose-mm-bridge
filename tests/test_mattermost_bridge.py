@@ -341,14 +341,44 @@ async def test_catchup_hint_merged_prompt(config, mock_api, mock_goose_client):
         await bridge._handle_message(post, "linux1")
         
         # Verify prompt text contains the catchup hint
-        # thread_size=10, last_processed=6 (from previous step), current_msg=1.
-        # new_messages = 10 - 6 - 1 = 3.
+        # thread_size=10, last_processed=5 (from previous step), current_msg=1.
+        # new_messages = 10 - 5 - 1 = 4.
         args, kwargs = mock_goose_client.prompt.call_args
         prompt_text = args[1]
-        assert "SYSTEM: There are 3 new messages" in prompt_text
+        assert "SYSTEM: There are 4 new messages" in prompt_text
         
-        # Verify processed_count was updated (thread_size + 1)
-        assert bridge.sessions["u1:root1"]["processed_count"] == 11
+        # Verify processed_count was updated (to thread_size)
+        assert bridge.sessions["u1:root1"]["processed_count"] == 10
+
+@pytest.mark.asyncio
+async def test_catchup_hint_clearing_prompt(config, mock_api, mock_goose_client):
+    factory = lambda user: mock_goose_client
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=factory)
+    bridge.bot_mention = "@bot"
+    
+    # Setup session that HAD a hint in the previous turn
+    bridge.sessions["u1:root1"] = {
+        "id": "session_1",
+        "linux_user": "linux1",
+        "processed_count": 10,
+        "had_catchup_hint": True
+    }
+    bridge.goose_clients["linux1"] = mock_goose_client
+    
+    # Current thread size is 11 (the message we are about to handle)
+    bridge.thread_counters["root1"] = 11
+    
+    post = {"id": "p11", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "@bot hello", "create_at": 1200}
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        await bridge._handle_message(post, "linux1")
+        
+        # new_messages = 11 - 10 - 1 = 0.
+        # Since had_catchup_hint was True, it should prepend the clearing message.
+        args, kwargs = mock_goose_client.prompt.call_args
+        prompt_text = args[1]
+        assert "SYSTEM: You are now caught up with the thread." in prompt_text
+        assert bridge.sessions["u1:root1"]["had_catchup_hint"] is False
 @pytest.mark.asyncio
 async def test_thread_counter_initialization(config, mock_api, mock_goose_client):
     bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
