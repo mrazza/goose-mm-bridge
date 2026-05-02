@@ -51,10 +51,9 @@ class MattermostMCPServer:
             all_posts_dict = {}
             from_post = ""
             
-            # We fetch the thread in batches to ensure we get the full history.
-            # We use direction="down" starting from the root_id to get all replies.
-            # If limit is 0 (all), we let the server decide the pagination.
-            per_page = 0 if limit == 0 else 60
+            # If limit is 0 (all), we use per_page=0 to get everything in one go.
+            # If limit > 0, we use the requested limit as our batch size.
+            per_page = limit if limit > 0 else 0
             
             while True:
                 thread = await self.bridge.api.get_thread(root_id,
@@ -66,7 +65,14 @@ class MattermostMCPServer:
                 
                 all_posts_dict.update(thread["posts"])
                 
+                # If we got everything (per_page=0) or there's no more pages
                 if per_page == 0 or not thread.get("has_next", False):
+                    break
+                
+                # If we are paginating, but we already have enough for the requested page
+                # (This is a simple optimization: if we have (page+1)*limit posts, we can stop
+                # assuming we are fetching in order and the user wants a slice)
+                if limit > 0 and len(all_posts_dict) >= (page + 1) * limit:
                     break
                     
                 order = thread.get("order", [])
