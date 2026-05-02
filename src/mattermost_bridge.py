@@ -31,6 +31,7 @@ class MattermostBridge:
         self.bot_mention = None
         self.background_tasks = set()
         self.thread_counters = {}  # Track message counts per thread
+        self.primed_threads = set()  # Track threads where we have fetched history
 
     async def initialize(self) -> bool:
         """Initializes the bridge by connecting to Mattermost."""
@@ -221,10 +222,14 @@ class MattermostBridge:
                 prompt_text = f"{context_msg}\n\n{message}" if is_new_session else message
 
                 # Catch-up Hinting: Compare messages in thread vs processed count
-                if root_id not in self.thread_counters:
-                    # Lazy prime the counter if we haven't seen this thread yet
+                if root_id not in self.primed_threads:
+                    # Lazy prime the counter with actual history if we haven't seen this thread yet.
+                    # This ensures we catch up on history that existed before the bridge started.
                     thread_data = await self.api.get_thread(root_id)
-                    self.thread_counters[root_id] = len(thread_data["posts"]) if thread_data else 1
+                    real_size = len(thread_data["posts"]) if thread_data else 1
+                    # Merge with what we've seen since polling started
+                    self.thread_counters[root_id] = max(self.thread_counters.get(root_id, 0), real_size)
+                    self.primed_threads.add(root_id)
                 
                 thread_size = self.thread_counters[root_id]
                 processed_count = session_data.get("processed_count", 0)
