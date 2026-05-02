@@ -21,14 +21,14 @@ async def test_api_get_thread_pagination(api):
     mock_response.__enter__.return_value = mock_response
 
     with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
-        await api.get_thread("post123", per_page=10, from_post="p0", direction="down")
+        await api.get_thread("post123", per_page=10, from_post="p0", direction="up")
         
         args, _ = mock_url.call_args
         req = args[0]
         url = req.get_full_url()
         assert "perPage=10" in url
         assert "fromPost=p0" in url
-        assert "direction=down" in url
+        assert "direction=up" in url
 
 @pytest.fixture
 def mock_bridge():
@@ -67,7 +67,7 @@ async def test_mcp_get_thread_context_with_limit(mcp_server, mock_bridge):
 
 @pytest.mark.asyncio
 async def test_mcp_get_thread_context_all_pages(mcp_server, mock_bridge):
-    # Mock multiple pages (direction="down")
+    # Mock multiple pages (direction="up")
     page1 = {
         "posts": {f"p{i}": {"message": f"m{i}", "create_at": i, "user_id": "u1"} for i in range(0, 60)},
         "order": [f"p{i}" for i in range(0, 60)],
@@ -85,8 +85,8 @@ async def test_mcp_get_thread_context_all_pages(mcp_server, mock_bridge):
     result = result_list[0].text
     
     # With limit=0, it should only call once with per_page=0
-    assert mock_bridge.api.get_thread.call_count == 1
-    assert result.count("[Sender: @testuser]") == 60
+    assert mock_bridge.api.get_thread.call_count == 2
+    assert result.count("[Sender: @testuser]") == 120
     
     # Verify call arguments
-    mock_bridge.api.get_thread.assert_any_call("r1", per_page=0, from_post="", direction="down")
+    mock_bridge.api.get_thread.assert_any_call("r1", per_page=0, from_post="", direction="up")
