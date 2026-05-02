@@ -79,19 +79,19 @@ class MattermostAPI:
     async def get_thread(self,
                          post_id: str,
                          per_page: int = 0,
-                         from_post: str = "",
+                         from_create_at: int = 0,
                          direction: str = "up") -> Optional[Dict[str, Any]]:
         """Fetch a thread of posts.
         
         Args:
             post_id: The ID of any post in the thread.
             per_page: Number of posts to return (0 for server default, usually 60).
-            from_post: The post ID to return the next page of posts from.
+            from_create_at: The timestamp to return the next page of posts from.
             direction: The direction to return the posts. Either up or down.
         """
         query = f"perPage={per_page}&direction={direction}"
-        if from_post:
-            query += f"&fromPost={from_post}"
+        if from_create_at:
+            query += f"&fromCreateAt={from_create_at}"
         return await self._request(f"/posts/{post_id}/thread?{query}")
 
     async def search_posts(self, team_id: str,

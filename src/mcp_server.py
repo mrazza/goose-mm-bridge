@@ -49,7 +49,7 @@ class MattermostMCPServer:
                 page: Optional page number when using limit.
             """
             all_posts_dict = {}
-            from_post = ""
+            from_create_at = 0
             
             # If limit is 0 (all), we use per_page=0 to get everything in one go.
             # If limit > 0, we use the requested limit as our batch size.
@@ -58,7 +58,7 @@ class MattermostMCPServer:
             while True:
                 thread = await self.bridge.api.get_thread(root_id,
                                                          per_page=per_page,
-                                                         from_post=from_post,
+                                                         from_create_at=from_create_at,
                                                          direction="up")
                 if not thread or "posts" not in thread or not thread["posts"]:
                     break
@@ -72,13 +72,16 @@ class MattermostMCPServer:
                 # If we are paginating, but we already have enough for the requested page
                 # (This is a simple optimization: if we have (page+1)*limit posts, we can stop
                 # assuming we are fetching in order and the user wants a slice)
-                if limit > 0 and len(all_posts_dict) >= (page + 1) * limit:
+                # We need to add one because the root message may be returned even if we
+                # don't want it.
+                if limit > 0 and len(all_posts_dict) >= (page + 1) * limit + 1:
                     break
                     
                 order = thread.get("order", [])
                 if not order:
                     break
-                from_post = order[-1]
+                last_post_id = order[-1]
+                from_create_at = thread["posts"][last_post_id]["create_at"]
 
             if not all_posts_dict:
                 return "Thread not found or empty"

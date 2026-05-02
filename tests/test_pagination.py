@@ -21,13 +21,13 @@ async def test_api_get_thread_pagination(api):
     mock_response.__enter__.return_value = mock_response
 
     with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
-        await api.get_thread("post123", per_page=10, from_post="p0", direction="up")
+        await api.get_thread("post123", per_page=10, from_create_at=12345, direction="up")
         
         args, _ = mock_url.call_args
         req = args[0]
         url = req.get_full_url()
         assert "perPage=10" in url
-        assert "fromPost=p0" in url
+        assert "fromCreateAt=12345" in url
         assert "direction=up" in url
 
 @pytest.fixture
@@ -91,4 +91,26 @@ async def test_mcp_get_thread_context_all_pages(mcp_server, mock_bridge):
     assert result.count("[Sender: @testuser]") == 120
     
     # Verify call arguments
-    mock_bridge.api.get_thread.assert_any_call("r1", per_page=0, from_post="", direction="up")
+    mock_bridge.api.get_thread.assert_any_call("r1", per_page=0, from_create_at=0, direction="up")
+    mock_bridge.api.get_thread.assert_any_call("r1", per_page=0, from_create_at=59, direction="up")
+
+@pytest.mark.asyncio
+async def test_mcp_get_thread_context_limit_optimization(mcp_server, mock_bridge):
+    # Mock a response that has more than (page+1)*limit + 1 posts
+    # limit=2, page=0 => threshold is 3 posts.
+    posts = {f"p{i}": {"message": f"m{i}", "create_at": i, "user_id": "u1"} for i in range(5)}
+    order = [f"p{i}" for i in range(5)]
+    
+    mock_bridge.api.get_thread = AsyncMock(return_value={
+        "posts": posts,
+        "order": order,
+        "has_next": True
+    })
+    
+    result_list, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1", "limit": 2, "page": 0})
+    
+    # Should only call get_thread once because we already have 5 posts, which is >= 3
+    assert mock_bridge.api.get_thread.call_count == 1
+    result = result_list[0].text
+    assert "m3" in result and "m4" in result
+    assert "m2" not in result
