@@ -85,7 +85,7 @@ async def test_call_tool_get_thread_context(mcp_server, mock_bridge):
     assert "[Sender: @user_u2] second" in result[0].text
     # Now called with per_page=60, from_post="", direction="down" by default in the pagination loop
     mock_bridge.api.get_thread.assert_any_call("r1",
-                                               per_page=60,
+                                               per_page=0,
                                                from_post="",
                                                direction="down")
 

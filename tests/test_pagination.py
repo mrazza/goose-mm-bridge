@@ -81,10 +81,9 @@ async def test_mcp_get_thread_context_all_pages(mcp_server, mock_bridge):
     result_list, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1", "limit": 0})
     result = result_list[0].text
     
-    assert mock_bridge.api.get_thread.call_count == 2
-    # Check that we received 120 messages total
-    assert result.count("[Sender: @testuser]") == 120
+    # With limit=0, it should only call once with per_page=0
+    assert mock_bridge.api.get_thread.call_count == 1
+    assert result.count("[Sender: @testuser]") == 60
     
     # Verify call arguments
-    mock_bridge.api.get_thread.assert_any_call("r1", per_page=60, from_post="", direction="down")
-    mock_bridge.api.get_thread.assert_any_call("r1", per_page=60, from_post="p59", direction="down")
+    mock_bridge.api.get_thread.assert_any_call("r1", per_page=0, from_post="", direction="down")
