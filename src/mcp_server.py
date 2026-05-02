@@ -48,21 +48,41 @@ class MattermostMCPServer:
                 limit: Optional limit on the number of messages to retrieve (0 for all).
                 page: Optional page number when using limit.
             """
-            # Mattermost API defaults to 60 posts per page.
-            # If limit is specified and > 0, we use it as per_page.
-            per_page = limit if limit > 0 else 60
-            thread = await self.bridge.api.get_thread(root_id,
-                                                     per_page=per_page,
-                                                     page=page)
-            if not thread or "posts" not in thread:
+            all_posts_dict = {}
+            
+            if limit > 0:
+                # Fetch a specific page with a specific limit
+                thread = await self.bridge.api.get_thread(root_id,
+                                                         per_page=limit,
+                                                         page=page)
+                if thread and "posts" in thread:
+                    all_posts_dict = thread["posts"]
+            else:
+                # Fetch the entire thread history (up to a safety limit)
+                current_page = 0
+                per_page = 60
+                while True:
+                    thread = await self.bridge.api.get_thread(root_id,
+                                                             per_page=per_page,
+                                                             page=current_page)
+                    if not thread or "posts" not in thread or not thread["posts"]:
+                        break
+                    
+                    all_posts_dict.update(thread["posts"])
+                    
+                    # If the page was partial, we've reached the end
+                    if len(thread.get("order", [])) < per_page:
+                        break
+                    
+                    current_page += 1
+                    if current_page > 20:  # Safety cap (1200+ posts)
+                        break
+
+            if not all_posts_dict:
                 return "Thread not found or empty"
 
-            posts = sorted(thread["posts"].values(),
+            posts = sorted(all_posts_dict.values(),
                            key=lambda x: x["create_at"])
-
-            # If limit is 0 (all), and there might be more pages, we could recursively fetch,
-            # but for simplicity we'll stick to what the API returned.
-            # Most threads are within the 60 post default.
 
             # Fetch usernames for attribution
             user_ids = list(set(p["user_id"] for p in posts))
