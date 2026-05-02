@@ -18,12 +18,14 @@ async def test_api_get_thread_pagination(api):
     mock_response.__enter__.return_value = mock_response
 
     with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
-        await api.get_thread("post123", per_page=10, page=2)
+        await api.get_thread("post123", per_page=10, from_post="p0", direction="down")
         
         args, _ = mock_url.call_args
         req = args[0]
-        assert "perPage=10" in req.get_full_url()
-        assert "page=2" in req.get_full_url()
+        url = req.get_full_url()
+        assert "perPage=10" in url
+        assert "fromPost=p0" in url
+        assert "direction=down" in url
 
 @pytest.fixture
 def mock_bridge():
@@ -38,39 +40,51 @@ def mcp_server(mock_bridge):
 
 @pytest.mark.asyncio
 async def test_mcp_get_thread_context_with_limit(mcp_server, mock_bridge):
+    # Mock a thread with 10 posts
+    posts = {f"p{i}": {"message": f"m{i}", "create_at": i, "user_id": "u1"} for i in range(10)}
+    order = [f"p{i}" for i in range(10)]
+    
     mock_bridge.api.get_thread = AsyncMock(return_value={
-        "posts": {"p1": {"message": "hi", "create_at": 1, "user_id": "u1"}},
-        "order": ["p1"]
+        "posts": posts,
+        "order": order,
+        "has_next": False
     })
     
-    await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1", "limit": 5, "page": 1})
+    # Test limit=2, page=0 (should be the last 2 posts: m8, m9)
+    result_list, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1", "limit": 2, "page": 0})
+    result = result_list[0].text
+    assert "m8" in result and "m9" in result
+    assert "m7" not in result
     
-    mock_bridge.api.get_thread.assert_called_once_with("r1", per_page=5, page=1)
+    # Test limit=2, page=1 (should be m6, m7)
+    result_list, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1", "limit": 2, "page": 1})
+    result = result_list[0].text
+    assert "m6" in result and "m7" in result
+    assert "m8" not in result
 
 @pytest.mark.asyncio
 async def test_mcp_get_thread_context_all_pages(mcp_server, mock_bridge):
-    # Mock multiple pages
+    # Mock multiple pages (direction="down")
     page1 = {
-        "posts": {f"p{i}": {"message": f"m{i}", "create_at": i, "user_id": "u1"} for i in range(60, 120)},
-        "order": [f"p{i}" for i in range(60, 120)],
-        "has_next": True
-    }
-    page2 = {
         "posts": {f"p{i}": {"message": f"m{i}", "create_at": i, "user_id": "u1"} for i in range(0, 60)},
         "order": [f"p{i}" for i in range(0, 60)],
         "has_next": True
     }
-    page3 = {"posts": {}, "order": [], "has_next": False}
+    page2 = {
+        "posts": {f"p{i}": {"message": f"m{i}", "create_at": i, "user_id": "u1"} for i in range(60, 120)},
+        "order": [f"p{i}" for i in range(60, 120)],
+        "has_next": False
+    }
     
-    mock_bridge.api.get_thread = AsyncMock(side_effect=[page1, page2, page3])
+    mock_bridge.api.get_thread = AsyncMock(side_effect=[page1, page2])
     
-    result, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1", "limit": 0})
+    result_list, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1", "limit": 0})
+    result = result_list[0].text
     
-    assert mock_bridge.api.get_thread.call_count == 3
+    assert mock_bridge.api.get_thread.call_count == 2
     # Check that we received 120 messages total
-    assert result[0].text.count("[Sender: @testuser]") == 120
+    assert result.count("[Sender: @testuser]") == 120
     
-    # Verify call arguments for pagination
-    mock_bridge.api.get_thread.assert_any_call("r1", per_page=0, page=0)
-    mock_bridge.api.get_thread.assert_any_call("r1", per_page=0, page=1)
-    mock_bridge.api.get_thread.assert_any_call("r1", per_page=0, page=2)
+    # Verify call arguments
+    mock_bridge.api.get_thread.assert_any_call("r1", per_page=60, from_post="", direction="down")
+    mock_bridge.api.get_thread.assert_any_call("r1", per_page=60, from_post="p59", direction="down")
