@@ -261,7 +261,7 @@ class MattermostBridge:
                     self.sessions[session_key] = {
                         "id": await goose.create_session(),
                         "linux_user": linux_user,
-                        "processed_count": thread_size,
+                        "processed_count": 0,
                         "had_catchup_hint": False
                     }
                     goose_sid = self.sessions[session_key]["id"]
