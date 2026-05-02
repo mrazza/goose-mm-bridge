@@ -60,7 +60,7 @@ async def test_catchup_flow_new_session(config, mock_api, mock_goose_client):
     
     # Mock history: thread has 5 messages already
     mock_api.get_thread = AsyncMock(return_value={
-        "posts": {f"p{i}": {"id": f"p{i}"} for i in range(1, 6)}
+        "posts": {f"p{i}": {"id": f"p{i}", "user_id": "u1"} for i in range(1, 6)}
     })
     
     # Message p5 is the one we are processing
@@ -111,7 +111,7 @@ async def test_catchup_flow_clearing_signal(config, mock_api, mock_goose_client)
     
     with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
         # 1. Trigger a catch-up hint
-        mock_api.get_thread = AsyncMock(return_value={"posts": {"p1": {}, "p2": {}}})
+        mock_api.get_thread = AsyncMock(return_value={"posts": {"p1": {"user_id": "u1"}, "p2": {"user_id": "u1"}}})
         await bridge._process_post({"id": "p2", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "@bot hi"}, {"c1": {"type": "O"}})
         await wait_for_bridge(bridge)
         
@@ -137,7 +137,7 @@ async def test_no_catchup_needed_when_synced(config, mock_api, mock_goose_client
     
     with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
         # First message - history is just this message
-        mock_api.get_thread = AsyncMock(return_value={"posts": {"p1": {}}})
+        mock_api.get_thread = AsyncMock(return_value={"posts": {"p1": {"user_id": "u1"}}})
         await bridge._process_post({"id": "p1", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "@bot hi"}, {"c1": {"type": "O"}})
         await wait_for_bridge(bridge)
         

@@ -31,7 +31,6 @@ class MattermostBridge:
         self.bot_mention = None
         self.background_tasks = set()
         self.thread_counters = {}  # Track message counts per thread
-        self.primed_threads = set()  # Track threads where we have fetched history
 
     async def initialize(self) -> bool:
         """Initializes the bridge by connecting to Mattermost."""
@@ -222,16 +221,8 @@ class MattermostBridge:
                 prompt_text = f"{context_msg}\n\n{message}" if is_new_session else message
 
                 # Catch-up Hinting: Compare messages in thread vs processed count
-                if root_id not in self.primed_threads:
-                    # Lazy prime the counter with actual history if we haven't seen this thread yet.
-                    # This ensures we catch up on history that existed before the bridge started.
-                    thread_data = await self.api.get_thread(root_id)
-                    real_size = len(thread_data["posts"]) if thread_data else 1
-                    # Merge with what we've seen since polling started
-                    self.thread_counters[root_id] = max(self.thread_counters.get(root_id, 0), real_size)
-                    self.primed_threads.add(root_id)
-                
-                thread_size = self.thread_counters[root_id]
+                # thread_counters is ensured to exist and be accurate by _process_post
+                thread_size = self.thread_counters.get(root_id, 1)
                 processed_count = session_data.get("processed_count", 0)
                 # New messages are those in the thread excluding the one we are currently processing
                 new_messages_count = max(0, thread_size - processed_count - 1)
@@ -294,20 +285,33 @@ class MattermostBridge:
         cid = post["channel_id"]
         channel = channel_map.get(cid)
         is_dm = channel and channel.get("type") == "D"
-
-        # Update thread counter
+        is_mentioned = self.bot_mention in message
         root_id = post.get("root_id") or post["id"]
-        self.thread_counters[root_id] = self.thread_counters.get(root_id, 0) + 1
 
+        # Update thread counter:
+        # If we are already tracking this thread, increment it.
+        if root_id in self.thread_counters:
+            self.thread_counters[root_id] += 1
+        
         # Special Command: !stop
         if message.lower() == "!stop":
             await self._handle_stop_command(post)
             return
 
         # Check if we should respond
-        is_mentioned = self.bot_mention in message
         if not is_dm and not is_mentioned:
             return
+
+        # If we are starting to respond but don't have a counter yet, prime it.
+        # This baseline includes all messages in the thread (including this one).
+        if root_id not in self.thread_counters:
+            thread_data = await self.api.get_thread(root_id)
+            if thread_data and "posts" in thread_data:
+                # Baseline includes all other users' posts up to and including this one.
+                others_posts = [p for p in thread_data["posts"].values() if p.get("user_id") != self.bot_id]
+                self.thread_counters[root_id] = len(others_posts)
+            else:
+                self.thread_counters[root_id] = 1
 
         user_info = await self.api.get_user(sender_id)
         username = user_info.get("username") if user_info else "unknown"
