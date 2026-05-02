@@ -228,20 +228,24 @@ class MattermostBridge:
                 thread_size = self.thread_counters[root_id]
                 processed_count = session_data.get("processed_count", 0)
                 # New messages are those in the thread excluding the one we are currently processing
-                new_messages_count = thread_size - processed_count - 1
+                new_messages_count = max(0, thread_size - processed_count - 1)
                 
+                had_hint = session_data.get("had_catchup_hint", False)
                 if new_messages_count > 0:
                     hint = f"SYSTEM: There are {new_messages_count} new messages in this thread since your last response. Use your tools if you need to catch up."
                     if self.config.debug:
                         print(f"[{datetime.now()}] Merging catch-up hint for {session_key}: {new_messages_count} new messages")
                     prompt_text = f"{hint}\n\n{prompt_text}"
-                
-
+                    session_data["had_catchup_hint"] = True
+                elif had_hint:
+                    # If we had a hint before but now have 0 new messages, explicitly clear the state to avoid confusion
+                    prompt_text = f"SYSTEM: You are now caught up with the thread.\n\n{prompt_text}"
+                    session_data["had_catchup_hint"] = False
 
                 try:
                     await self._stream_response_to_mattermost(goose, goose_sid, prompt_text, channel_id, root_id)
-                    # Update processed count to include the message we just processed and our response
-                    session_data["processed_count"] = thread_size + 1
+                    # Update processed count to the current thread size (user messages handled)
+                    session_data["processed_count"] = thread_size
                 except (ValueError, RuntimeError, asyncio.TimeoutError) as e:
                     print(f"[{datetime.now()}] Session {session_key} lost, retrying once: {e}")
                     await self.api.create_post(
@@ -252,7 +256,7 @@ class MattermostBridge:
                     self.sessions[session_key] = {
                         "id": await goose.create_session(),
                         "linux_user": linux_user,
-                        "processed_count": 0
+                        "processed_count": thread_size
                     }
                     goose_sid = self.sessions[session_key]["id"]
                     # Also prepend context for the fresh retry session
