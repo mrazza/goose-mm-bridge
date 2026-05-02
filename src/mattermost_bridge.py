@@ -233,7 +233,11 @@ class MattermostBridge:
                 
                 had_hint = session_data.get("had_catchup_hint", False)
                 if new_messages_count > 0:
-                    hint = f"SYSTEM: There are {new_messages_count} new messages in this thread since your last response. Use your tools if you need to catch up."
+                    if is_new_session:
+                        hint = f"SYSTEM: You have joined an existing thread with {new_messages_count} earlier messages. Use your tools if you need to catch up on the history."
+                    else:
+                        hint = f"SYSTEM: There are {new_messages_count} new messages in this thread since your last response. Use your tools if you need to catch up."
+                    
                     if self.config.debug:
                         print(f"[{datetime.now()}] Merging catch-up hint for {session_key}: {new_messages_count} new messages")
                     prompt_text = f"{hint}\n\n{prompt_text}"

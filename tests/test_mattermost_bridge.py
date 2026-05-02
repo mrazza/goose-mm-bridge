@@ -431,3 +431,25 @@ async def test_ignore_whitespace_only_messages(config, mock_api, mock_goose_clie
         # Now try a direct handle_message call with spaces
         await bridge._handle_message(post, "linux1")
         assert not mock_goose_client.prompt.called
+@pytest.mark.asyncio
+async def test_catchup_hint_new_session(config, mock_api, mock_goose_client):
+    factory = lambda user: mock_goose_client
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=factory)
+    bridge.bot_mention = "@bot"
+    
+    # Mock thread with 5 messages
+    mock_api.get_thread = AsyncMock(return_value={
+        "posts": {f"p{i}": {"id": f"p{i}", "create_at": 1000+i} for i in range(1, 6)}
+    })
+    
+    post = {"id": "p5", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "@bot hello", "create_at": 1005}
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        # This will be a new session
+        await bridge._handle_message(post, "linux1")
+        
+        # thread_size=5, processed_count=0, current_msg=1 -> new_messages=4
+        args, kwargs = mock_goose_client.prompt.call_args
+        prompt_text = args[1]
+        assert "SYSTEM: You have joined an existing thread with 4 earlier messages." in prompt_text
+        assert "Use your tools if you need to catch up on the history." in prompt_text
