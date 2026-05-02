@@ -1,11 +1,13 @@
 import asyncio
+from datetime import datetime
 import json
 import os
 import sys
 import time
-from datetime import datetime
-from typing import Dict, Optional, Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Dict, Optional
+
 from config import default_config
+
 
 class GooseACPClient:
     """Client for interacting with the Goose ACP process."""
@@ -29,15 +31,18 @@ class GooseACPClient:
         async with self._start_lock:
             if self.process is None or self.process.returncode is not None or not self._healthy:
                 if self.process is not None:
-                    print(f"[{datetime.now()}] Goose ACP process died (code {self.process.returncode}). Restarting...")
+                    print(
+                        f"[{datetime.now()}] Goose ACP process died (code {self.process.returncode}). Restarting..."
+                    )
                     # Fail any pending requests
                     for fut in self.pending_requests.values():
                         if not fut.done():
-                            fut.set_exception(RuntimeError("Goose ACP process terminated"))
+                            fut.set_exception(
+                                RuntimeError("Goose ACP process terminated"))
                     self.pending_requests.clear()
                     # Clear session queues as they are tied to the old process
                     self.session_queues.clear()
-                
+
                 await self._start()
                 self._healthy = True
 
@@ -49,7 +54,8 @@ class GooseACPClient:
             import pwd
             try:
                 home_dir = pwd.getpwnam(self.linux_user).pw_dir
-                cmd = ["sudo", "-n", "-u", self.linux_user, "-D", home_dir] + cmd
+                cmd = ["sudo", "-n", "-u", self.linux_user, "-D", home_dir
+                      ] + cmd
             except KeyError:
                 cmd = ["sudo", "-n", "-u", self.linux_user] + cmd
 
@@ -59,23 +65,32 @@ class GooseACPClient:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            limit=10*1024*1024  # 10MB buffer for large JSON-RPC messages
+            limit=10 * 1024 * 1024  # 10MB buffer for large JSON-RPC messages
         )
         asyncio.create_task(self._read_stdout())
         asyncio.create_task(self._read_stderr())
-        
+
         # Handshake
         try:
             # Note: we use _send_raw_request here because send_request calls ensure_running
-            res = await asyncio.wait_for(self._send_raw_request("initialize", {
-                "protocolVersion": 0,
-                "capabilities": {},
-                "clientInfo": {"name": "goose-mm-bridge", "version": "1.0.0"}
-            }), timeout=self.config.rpc_timeout)
+            res = await asyncio.wait_for(self._send_raw_request(
+                "initialize", {
+                    "protocolVersion": 0,
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "goose-mm-bridge",
+                        "version": "1.0.0"
+                    }
+                }),
+                                         timeout=self.config.rpc_timeout)
             capabilities = res.get("result", {}).get("agentCapabilities", {})
-            self.sse_supported = capabilities.get("mcpCapabilities", {}).get("sse", False)
-            self.http_supported = capabilities.get("mcpCapabilities", {}).get("http", False)
-            print(f"[{datetime.now()}] Goose ACP initialized. SSE support: {self.sse_supported}, HTTP support: {self.http_supported}")
+            self.sse_supported = capabilities.get("mcpCapabilities",
+                                                  {}).get("sse", False)
+            self.http_supported = capabilities.get("mcpCapabilities",
+                                                   {}).get("http", False)
+            print(
+                f"[{datetime.now()}] Goose ACP initialized. SSE support: {self.sse_supported}, HTTP support: {self.http_supported}"
+            )
         except Exception as e:
             print(f"[{datetime.now()}] Failed to initialize Goose ACP: {e}")
             if self.process:
@@ -91,32 +106,35 @@ class GooseACPClient:
         while True:
             if self.process is None or self.process.stdout.at_eof():
                 break
-                
+
             line = await self.process.stdout.readline()
             if not line:
                 break
-            
+
             try:
                 line_str = line.decode().strip()
-                if not line_str: continue
+                if not line_str:
+                    continue
                 if self.config.debug:
                     print(f"DEBUG: GOOSE -> BRIDGE: {line_str}")
                 res = json.loads(line_str)
                 req_id = res.get("id")
-                
+
                 if req_id is not None and req_id in self.pending_requests:
                     if not self.pending_requests[req_id].done():
                         self.pending_requests[req_id].set_result(res)
                     del self.pending_requests[req_id]
-                
-                if res.get("method") in ["session/prompt/next", "session/update"]:
+
+                if res.get("method") in [
+                        "session/prompt/next", "session/update"
+                ]:
                     params = res.get("params", {})
                     session_id = params.get("sessionId")
                     if session_id and session_id in self.session_queues:
                         await self.session_queues[session_id].put(res)
             except Exception as e:
                 print(f"Error parsing Goose output: {e}")
-        
+
         # Fail any remaining pending requests
         for fut in list(self.pending_requests.values()):
             if not fut.done():
@@ -136,24 +154,27 @@ class GooseACPClient:
             if msg:
                 print(f"[GOOSE-STDERR] {msg}", file=sys.stderr)
 
-    async def _send_raw_request(self, method: str, params: dict = None, req_id: int = None) -> dict:
+    async def _send_raw_request(self,
+                                method: str,
+                                params: dict = None,
+                                req_id: int = None) -> dict:
         """Sends a JSON-RPC request to the Goose ACP process without checking health."""
         if req_id is None:
             req_id = self.message_id
             self.message_id += 1
         self.last_id_used = req_id
-        
+
         request = {
             "jsonrpc": "2.0",
             "method": method,
             "params": params or {},
             "id": req_id
         }
-        
+
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         self.pending_requests[req_id] = future
-        
+
         try:
             self.process.stdin.write((json.dumps(request) + "\n").encode())
             await self.process.stdin.drain()
@@ -162,7 +183,6 @@ class GooseACPClient:
             # Ensure we clean up the future if we were cancelled (e.g. timeout)
             self.pending_requests.pop(req_id, None)
 
-    
     async def send_notification(self, method: str, params: dict = None):
         """Sends a JSON-RPC notification (no ID) to the Goose ACP process."""
         await self.ensure_running()
@@ -176,22 +196,35 @@ class GooseACPClient:
         self.process.stdin.write((json.dumps(notification) + "\n").encode())
         await self.process.stdin.drain()
 
-    async def send_request(self, method: str, params: dict = None, timeout: Optional[int] = None, req_id: int = None) -> dict:
+    async def send_request(self,
+                           method: str,
+                           params: dict = None,
+                           timeout: Optional[int] = None,
+                           req_id: int = None) -> dict:
         """Sends a JSON-RPC request to the Goose ACP process."""
         await self.ensure_running()
         if self.config.debug:
             print(f"DEBUG: BRIDGE -> GOOSE: {method}({params})")
-        
+
         wait_timeout = timeout if timeout is not None else self.config.rpc_timeout
         try:
             if wait_timeout <= 0:
-                return await self._send_raw_request(method, params, req_id=req_id)
-            return await asyncio.wait_for(self._send_raw_request(method, params, req_id=req_id), timeout=wait_timeout)
+                return await self._send_raw_request(method,
+                                                    params,
+                                                    req_id=req_id)
+            return await asyncio.wait_for(self._send_raw_request(method,
+                                                                 params,
+                                                                 req_id=req_id),
+                                          timeout=wait_timeout)
         except asyncio.TimeoutError:
-            print(f"[{datetime.now()}] Request {method} timed out after {wait_timeout}s")
+            print(
+                f"[{datetime.now()}] Request {method} timed out after {wait_timeout}s"
+            )
             self._healthy = False
             if self.process and self.process.returncode is None:
-                print(f"[{datetime.now()}] Terminating unresponsive Goose ACP process...")
+                print(
+                    f"[{datetime.now()}] Terminating unresponsive Goose ACP process..."
+                )
                 try:
                     self.process.terminate()
                 except Exception as e:
@@ -202,11 +235,8 @@ class GooseACPClient:
         """Creates a new session in the Goose ACP."""
         await self.ensure_running()
 
-        params = {
-            "cwd": os.getcwd(),
-            "mcpServers": self._get_mcp_servers()
-        }
-            
+        params = {"cwd": os.getcwd(), "mcpServers": self._get_mcp_servers()}
+
         res = await self.send_request("session/new", params)
         if "error" in res:
             raise Exception(f"Failed to create session: {res['error']}")
@@ -214,40 +244,48 @@ class GooseACPClient:
         self.session_queues[session_id] = asyncio.Queue()
         return session_id
 
-    async def prompt(self, session_id: str, text: str) -> AsyncGenerator[Dict[str, Any], None]:
+    async def prompt(self, session_id: str,
+                     text: str) -> AsyncGenerator[Dict[str, Any], None]:
         """Sends a prompt to a session and yields updates."""
         if self.config.debug:
             print(f"DEBUG: Starting prompt for session {session_id}")
-        
+
         if session_id not in self.session_queues:
             # Session might have been lost due to a restart
-            raise ValueError(f"Session {session_id} not found (may have been reset)")
+            raise ValueError(
+                f"Session {session_id} not found (may have been reset)")
 
         # Clear existing chunks
         while not self.session_queues[session_id].empty():
             self.session_queues[session_id].get_nowait()
-            
+
         prompt_id = self.message_id
         self.message_id += 1
         self.active_prompts[session_id] = prompt_id
-        res_future = asyncio.create_task(self.send_request("session/prompt", {
-            "sessionId": session_id,
-            "prompt": [{"type": "text", "text": text}]
-        }, timeout=0, req_id=prompt_id))
-        
+        res_future = asyncio.create_task(
+            self.send_request("session/prompt", {
+                "sessionId": session_id,
+                "prompt": [{
+                    "type": "text",
+                    "text": text
+                }]
+            },
+                              timeout=0,
+                              req_id=prompt_id))
+
         full_response = ""
         last_activity = time.time()
         # Use a single try block for the entire loop to ensure cleanup in finally
         try:
             while True:
                 # Wait for a chunk or the final response
-                chunk_task = asyncio.create_task(self.session_queues[session_id].get())
+                chunk_task = asyncio.create_task(
+                    self.session_queues[session_id].get())
                 done, pending = await asyncio.wait(
-                    [chunk_task, res_future], 
+                    [chunk_task, res_future],
                     timeout=0.1,
-                    return_when=asyncio.FIRST_COMPLETED
-                )
-                
+                    return_when=asyncio.FIRST_COMPLETED)
+
                 if chunk_task in done:
                     last_activity = time.time()
                     chunk = chunk_task.result()
@@ -258,7 +296,7 @@ class GooseACPClient:
                             yield {"type": "content", "text": full_response}
                         else:
                             yield parsed
-                        
+
                 elif not chunk_task.done():
                     chunk_task.cancel()
 
@@ -268,34 +306,44 @@ class GooseACPClient:
                     # Final result received, but there might be more chunks in the queue
                     res = res_future.result()
                     if "error" in res:
-                         raise Exception(f"Goose error: {res['error']}")
-                         
-                    full_response = await self._drain_remaining_chunks(session_id, full_response)
+                        raise Exception(f"Goose error: {res['error']}")
+
+                    full_response = await self._drain_remaining_chunks(
+                        session_id, full_response)
                     break
-                    
+
                 # If neither is done, check if process is still alive
                 if self.process is None or self.process.returncode is not None:
-                    raise RuntimeError("Goose ACP process terminated during prompt")
-                
+                    raise RuntimeError(
+                        "Goose ACP process terminated during prompt")
+
                 # Check for inactivity timeout
                 if time.time() - last_activity > self.config.rpc_timeout:
-                    print(f"[{datetime.now()}] Request session/prompt timed out after {self.config.rpc_timeout}s")
+                    print(
+                        f"[{datetime.now()}] Request session/prompt timed out after {self.config.rpc_timeout}s"
+                    )
                     self._healthy = False
                     if self.process and self.process.returncode is None:
-                        print(f"[{datetime.now()}] Terminating unresponsive Goose ACP process...")
+                        print(
+                            f"[{datetime.now()}] Terminating unresponsive Goose ACP process..."
+                        )
                         try:
                             self.process.terminate()
                         except Exception as e:
-                            print(f"[{datetime.now()}] Error terminating process: {e}")
-                    raise asyncio.TimeoutError(f"Request session/prompt timed out after {self.config.rpc_timeout}s")
-                    
+                            print(
+                                f"[{datetime.now()}] Error terminating process: {e}"
+                            )
+                    raise asyncio.TimeoutError(
+                        f"Request session/prompt timed out after {self.config.rpc_timeout}s"
+                    )
+
         except Exception as e:
             if not res_future.done():
                 res_future.cancel()
             raise
         finally:
             self.active_prompts.pop(session_id, None)
-        
+
         yield {"type": "final", "text": full_response}
 
     def _parse_update_chunk(self, chunk: dict) -> Optional[dict]:
@@ -304,11 +352,11 @@ class GooseACPClient:
             print(f"DEBUG: Parsing chunk: {chunk}")
         params = chunk.get("params", {})
         update = params.get("update", {})
-        
+
         # Handle session/prompt/next format
         if params.get("chunk", {}).get("type") == "text":
             return {"type": "content", "text": params["chunk"]["text"]}
-        
+
         # Handle session/update format
         session_update = update.get("sessionUpdate")
         if session_update == "agent_message_chunk":
@@ -319,19 +367,28 @@ class GooseACPClient:
             return {"type": "thinking", "text": update.get("thinking", "")}
         elif session_update == "call_tool":
             tool_call = update.get("toolCall", {})
-            return {"type": "tool", "name": tool_call.get("name"), "arguments": tool_call.get("arguments")}
+            return {
+                "type": "tool",
+                "name": tool_call.get("name"),
+                "arguments": tool_call.get("arguments")
+            }
         elif session_update == "tool_call":
-            return {"type": "tool", "name": update.get("title") or "tool", "arguments": {}}
+            return {
+                "type": "tool",
+                "name": update.get("title") or "tool",
+                "arguments": {}
+            }
         elif session_update == "tool_call_update":
             title = update.get("title")
             if title:
                 return {"type": "thinking", "text": title}
-        
+
         if self.config.debug:
             print(f"DEBUG: Unknown or unhandled chunk format: {chunk}")
         return None
 
-    async def _drain_remaining_chunks(self, session_id: str, full_response: str) -> str:
+    async def _drain_remaining_chunks(self, session_id: str,
+                                      full_response: str) -> str:
         """Drains any remaining chunks from the session queue after the final response."""
         if session_id not in self.session_queues:
             return full_response
@@ -339,7 +396,7 @@ class GooseACPClient:
             chunk = await self.session_queues[session_id].get()
             if self.config.debug:
                 print(f"DEBUG: Draining late chunk for {session_id}")
-            
+
             parsed = self._parse_update_chunk(chunk)
             if parsed and parsed["type"] == "content":
                 full_response += parsed["text"]
@@ -355,10 +412,11 @@ class GooseACPClient:
             })
             return True
         return False
+
     def _get_mcp_servers(self):
         if not self.config.mcp_enabled or not self.http_supported:
             return []
-        
+
         return [{
             "type": "http",
             "name": "mattermost-bridge",

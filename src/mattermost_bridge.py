@@ -1,12 +1,14 @@
 import asyncio
-import time
 from datetime import datetime
+import time
 from typing import Dict, List, Optional
 
 from config import default_config
 from goose_acp_client import GooseACPClient
 from mattermost_api import MattermostAPI
-from utils import clean_message, load_user_mapping, get_session_key
+from utils import clean_message
+from utils import get_session_key
+from utils import load_user_mapping
 
 CACHE_TTL = 60  # Update cache every 60 seconds
 THINKING_MSG = ":thinking_face: **Thinking...**"
@@ -18,7 +20,8 @@ class MattermostBridge:
     def __init__(self, api=None, config=None, goose_client_factory=None):
         self.config = config or default_config
         self.api = api or MattermostAPI(config=self.config)
-        self.goose_client_factory = goose_client_factory or (lambda user: GooseACPClient(user, config=self.config))
+        self.goose_client_factory = goose_client_factory or (
+            lambda user: GooseACPClient(user, config=self.config))
         self.goose_clients: Dict[str, GooseACPClient] = {}
         self.sessions = {}
         self.active_tasks = {}
@@ -36,18 +39,24 @@ class MattermostBridge:
         """Initializes the bridge by connecting to Mattermost."""
         me = await self.api.get_me()
         if not me:
-            print(f"[{datetime.now()}] Failed to connect to Mattermost. Check your URL and TOKEN.")
+            print(
+                f"[{datetime.now()}] Failed to connect to Mattermost. Check your URL and TOKEN."
+            )
             return False
 
         self.bot_id = me["id"]
         self.bot_username = me["username"]
         self.bot_mention = f"@{self.bot_username}"
-        print(f"[{datetime.now()}] Connected as {self.bot_username} ({self.bot_id})")
+        print(
+            f"[{datetime.now()}] Connected as {self.bot_username} ({self.bot_id})"
+        )
 
         user_mapping = load_user_mapping(self.config.user_mapping_file)
         if not user_mapping:
-            print(f"[{datetime.now()}] WARNING: No user mapping found. Bridge will run as current user for all requests.")
-        
+            print(
+                f"[{datetime.now()}] WARNING: No user mapping found. Bridge will run as current user for all requests."
+            )
+
         return True
 
     async def _update_channel_cache(self):
@@ -55,8 +64,9 @@ class MattermostBridge:
         current_time = time.time()
         if not self.channels_cache or current_time - self.last_cache_update > CACHE_TTL:
             if self.config.debug:
-                print(f"[{datetime.now()}] Updating Mattermost channels cache...")
-            
+                print(
+                    f"[{datetime.now()}] Updating Mattermost channels cache...")
+
             channels = await self.api.get_direct_channels() or []
             teams = await self.api.get_my_teams() or []
             for team in teams:
@@ -72,26 +82,30 @@ class MattermostBridge:
         cid = post["channel_id"]
         root_id = post.get("root_id") or post["id"]
         session_key = get_session_key(sender_id, root_id)
-        
+
         interrupted = False
         if session_key in self.sessions:
-            print(f"[{datetime.now()}] Interruption requested for {session_key}")
+            print(
+                f"[{datetime.now()}] Interruption requested for {session_key}")
             sid = self.sessions[session_key]["id"]
             user_mapping = load_user_mapping(self.config.user_mapping_file)
             user_info = await self.api.get_user(sender_id)
             username = user_info.get("username") if user_info else "unknown"
-            linux_user = user_mapping.get(sender_id) or user_mapping.get(username)
-            
+            linux_user = user_mapping.get(sender_id) or user_mapping.get(
+                username)
+
             if linux_user and linux_user in self.goose_clients:
                 await self.goose_clients[linux_user].cancel_prompt(sid)
                 interrupted = True
-        
+
         if session_key in self.active_tasks:
             self.active_tasks[session_key].cancel()
             interrupted = True
-            
+
         if interrupted:
-            await self.api.create_post(cid, "🛑 *Prompt cancelled.*", root_id=root_id)
+            await self.api.create_post(cid,
+                                       "🛑 *Prompt cancelled.*",
+                                       root_id=root_id)
 
     async def _prune_sessions(self):
         """Prunes old sessions if the count exceeds MAX_SESSIONS."""
@@ -111,12 +125,15 @@ class MattermostBridge:
                 client = self.goose_clients[target_linux_user]
                 if sid in client.session_queues:
                     del client.session_queues[sid]
-                asyncio.create_task(client.send_request("session/close", {"sessionId": sid}))
+                asyncio.create_task(
+                    client.send_request("session/close", {"sessionId": sid}))
 
             if k in self.session_locks:
                 del self.session_locks[k]
 
-    async def _stream_response_to_mattermost(self, goose: GooseACPClient, sid: str, msg: str, channel_id: str, root_id: str):
+    async def _stream_response_to_mattermost(self, goose: GooseACPClient,
+                                             sid: str, msg: str,
+                                             channel_id: str, root_id: str):
         """Streams a response from Goose to Mattermost."""
         thinking_post = None
         full_response = ""
@@ -125,7 +142,9 @@ class MattermostBridge:
         last_update_time = 0
 
         # Create an initial thinking post to show immediate feedback
-        thinking_post = await self.api.create_post(channel_id, THINKING_MSG, root_id=root_id)
+        thinking_post = await self.api.create_post(channel_id,
+                                                   THINKING_MSG,
+                                                   root_id=root_id)
         last_update_time = time.time()
 
         async for update in goose.prompt(sid, msg):
@@ -146,33 +165,46 @@ class MattermostBridge:
             should_update = False
             if update["type"] == "final":
                 should_update = True
-            elif (current_time - last_update_time > 1.0) and ((self.config.goose_thinking_trace and thinking_trace) or full_response):
+            elif (current_time - last_update_time > 1.0) and (
+                (self.config.goose_thinking_trace and thinking_trace) or
+                    full_response):
                 should_update = True
 
             if should_update:
                 resp_msg = ""
                 props = {}
-                
+
                 # Determine the message content
                 if update["type"] != "final":
                     # While thinking/streaming
                     if self.config.goose_thinking_trace_simplified and last_thinking_text:
-                         # Simplified mode: Thinking... [Last action]
-                         resp_msg = full_response or f"{THINKING_MSG} *[{last_thinking_text}]*"
+                        # Simplified mode: Thinking... [Last action]
+                        resp_msg = full_response or f"{THINKING_MSG} *[{last_thinking_text}]*"
                     else:
-                         resp_msg = full_response or THINKING_MSG
+                        resp_msg = full_response or THINKING_MSG
                 else:
                     # Final response
                     resp_msg = full_response
 
                 # Determine if we add attachments
                 if self.config.goose_thinking_trace and thinking_trace and not self.config.goose_thinking_trace_simplified:
-                    props = {"attachments": [{"text": thinking_trace, "title": "Thinking Trace", "color": "#9b9b9b"}]}
+                    props = {
+                        "attachments": [{
+                            "text": thinking_trace,
+                            "title": "Thinking Trace",
+                            "color": "#9b9b9b"
+                        }]
+                    }
 
                 if not thinking_post:
-                    thinking_post = await self.api.create_post(channel_id, resp_msg, root_id=root_id, props=props)
+                    thinking_post = await self.api.create_post(channel_id,
+                                                               resp_msg,
+                                                               root_id=root_id,
+                                                               props=props)
                 else:
-                    await self.api.update_post(thinking_post["id"], resp_msg, props=props)
+                    await self.api.update_post(thinking_post["id"],
+                                               resp_msg,
+                                               props=props)
                 last_update_time = current_time
 
     async def _handle_message(self, post: dict, linux_user: Optional[str]):
@@ -181,7 +213,7 @@ class MattermostBridge:
         message = post.get("message", "").strip()
         if not message:
             return
-            
+
         channel_id = post["channel_id"]
         root_id = post.get("root_id") or post["id"]
         session_key = get_session_key(sender_id, root_id)
@@ -193,18 +225,23 @@ class MattermostBridge:
             self.session_locks[session_key] = asyncio.Lock()
 
         if linux_user not in self.goose_clients:
-            self.goose_clients[linux_user] = self.goose_client_factory(linux_user)
+            self.goose_clients[linux_user] = self.goose_client_factory(
+                linux_user)
         goose = self.goose_clients[linux_user]
 
         async with self.session_locks[session_key]:
             try:
                 message = clean_message(message, self.bot_mention)
-                print(f"[{datetime.now()}] User {sender_id} says: {message[:100]}...")
+                print(
+                    f"[{datetime.now()}] User {sender_id} says: {message[:100]}..."
+                )
 
                 is_new_session = False
                 if session_key not in self.sessions:
-                    print(f"[{datetime.now()}] Creating new Goose session for {session_key}")
-                    
+                    print(
+                        f"[{datetime.now()}] Creating new Goose session for {session_key}"
+                    )
+
                     sid = await goose.create_session()
                     self.sessions[session_key] = {
                         "id": sid,
@@ -228,16 +265,18 @@ class MattermostBridge:
                 processed_count = session_data.get("processed_count", 0)
                 # New messages are those in the thread excluding the one we are currently processing
                 new_messages_count = max(0, thread_size - processed_count - 1)
-                
+
                 had_hint = session_data.get("had_catchup_hint", False)
                 if new_messages_count > 0:
                     if is_new_session:
                         hint = f"SYSTEM: You have joined an existing thread with {new_messages_count} earlier messages. Use your tools if you need to catch up on the history."
                     else:
                         hint = f"SYSTEM: There are {new_messages_count} new messages in this thread since your last response. Use your tools if you need to catch up."
-                    
+
                     if self.config.debug:
-                        print(f"[{datetime.now()}] Merging catch-up hint for {session_key}: {new_messages_count} new messages")
+                        print(
+                            f"[{datetime.now()}] Merging catch-up hint for {session_key}: {new_messages_count} new messages"
+                        )
                     prompt_text = f"{hint}\n\n{prompt_text}"
                     session_data["had_catchup_hint"] = True
                 elif had_hint:
@@ -246,11 +285,14 @@ class MattermostBridge:
                     session_data["had_catchup_hint"] = False
 
                 try:
-                    await self._stream_response_to_mattermost(goose, goose_sid, prompt_text, channel_id, root_id)
+                    await self._stream_response_to_mattermost(
+                        goose, goose_sid, prompt_text, channel_id, root_id)
                     # Update processed count to the current thread size (user messages handled)
                     session_data["processed_count"] = thread_size
                 except (ValueError, RuntimeError, asyncio.TimeoutError) as e:
-                    print(f"[{datetime.now()}] Session {session_key} lost, retrying once: {e}")
+                    print(
+                        f"[{datetime.now()}] Session {session_key} lost, retrying once: {e}"
+                    )
                     await self.api.create_post(
                         channel_id,
                         "🔄 *Notice: Connection to Goose was reset. I am starting a fresh session for this thread.*",
@@ -265,11 +307,18 @@ class MattermostBridge:
                     goose_sid = self.sessions[session_key]["id"]
                     # Also prepend context for the fresh retry session
                     retry_context = f"{context_msg} NOTE: The previous session for this thread terminated unexpectedly. Context from earlier in this conversation has been lost, but you can use the IDs above to try to recover history if needed."
-                    await self._stream_response_to_mattermost(goose, goose_sid, f"{retry_context}\n\n{message}", channel_id, root_id)
+                    await self._stream_response_to_mattermost(
+                        goose, goose_sid, f"{retry_context}\n\n{message}",
+                        channel_id, root_id)
 
             except Exception as e:
-                print(f"[{datetime.now()}] Error handling message for {session_key}: {e}")
-                await self.api.create_post(channel_id, f"⚠️ Sorry, I encountered an error: {str(e)}", root_id=root_id)
+                print(
+                    f"[{datetime.now()}] Error handling message for {session_key}: {e}"
+                )
+                await self.api.create_post(
+                    channel_id,
+                    f"⚠️ Sorry, I encountered an error: {str(e)}",
+                    root_id=root_id)
             finally:
                 if self.active_tasks.get(session_key) == asyncio.current_task():
                     del self.active_tasks[session_key]
@@ -294,7 +343,7 @@ class MattermostBridge:
         # If we are already tracking this thread, increment it.
         if root_id in self.thread_counters:
             self.thread_counters[root_id] += 1
-        
+
         # Special Command: !stop
         if message.lower() == "!stop":
             await self._handle_stop_command(post)
@@ -310,7 +359,11 @@ class MattermostBridge:
             thread_data = await self.api.get_thread(root_id)
             if thread_data and "posts" in thread_data:
                 # Baseline includes all other users' posts up to and including this one.
-                others_posts = [p for p in thread_data["posts"].values() if p.get("user_id") != self.bot_id and p.get("message", "").strip()]
+                others_posts = [
+                    p for p in thread_data["posts"].values()
+                    if p.get("user_id") != self.bot_id and
+                    p.get("message", "").strip()
+                ]
                 self.thread_counters[root_id] = len(others_posts)
             else:
                 self.thread_counters[root_id] = 1
@@ -321,7 +374,9 @@ class MattermostBridge:
         if self.config.approved_users:
             if sender_id not in self.config.approved_users and username not in self.config.approved_users:
                 if self.config.debug:
-                    print(f"[{datetime.now()}] Ignoring message from unapproved user: {username} ({sender_id})")
+                    print(
+                        f"[{datetime.now()}] Ignoring message from unapproved user: {username} ({sender_id})"
+                    )
                 return
 
         # Linux User Mapping
@@ -329,7 +384,9 @@ class MattermostBridge:
         linux_user = user_mapping.get(sender_id) or user_mapping.get(username)
 
         if self.config.require_user_mapping and not linux_user:
-            print(f"[{datetime.now()}] Rejecting approved user {username}: No Linux user mapping and REQUIRE_USER_MAPPING=true")
+            print(
+                f"[{datetime.now()}] Rejecting approved user {username}: No Linux user mapping and REQUIRE_USER_MAPPING=true"
+            )
             await self.api.create_post(
                 cid,
                 f"⚠️ Your account is approved but has no assigned OS-level isolation profile. Please contact an administrator.",
@@ -347,21 +404,25 @@ class MattermostBridge:
         if not await self.initialize():
             return
 
-        print(f"[{datetime.now()}] Bridge is polling for messages. Press Ctrl+C to stop.")
+        print(
+            f"[{datetime.now()}] Bridge is polling for messages. Press Ctrl+C to stop."
+        )
 
         try:
             while True:
                 try:
                     await self._update_channel_cache()
                     channel_map = {c["id"]: c for c in self.channels_cache}
-                    
+
                     new_since = self.last_since
                     for cid in channel_map.keys():
-                        posts_data = await self.api.get_channel_posts(cid, self.last_since)
+                        posts_data = await self.api.get_channel_posts(
+                            cid, self.last_since)
                         if not posts_data or "posts" not in posts_data:
                             continue
 
-                        sorted_posts = sorted(posts_data["posts"].values(), key=lambda x: x["create_at"])
+                        sorted_posts = sorted(posts_data["posts"].values(),
+                                              key=lambda x: x["create_at"])
 
                         for post in sorted_posts:
                             if post["create_at"] <= self.last_since:
@@ -384,8 +445,9 @@ class MattermostBridge:
             for task in self.background_tasks:
                 task.cancel()
             if self.background_tasks:
-                await asyncio.gather(*self.background_tasks, return_exceptions=True)
-            
+                await asyncio.gather(*self.background_tasks,
+                                     return_exceptions=True)
+
             # Close all goose clients
             for client in self.goose_clients.values():
                 if client.process and client.process.returncode is None:
