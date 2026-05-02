@@ -87,7 +87,7 @@ async def test_call_tool_get_thread_context(mcp_server, mock_bridge):
     mock_bridge.api.get_thread.assert_any_call("r1",
                                                per_page=0,
                                                from_post="",
-                                               direction="down")
+                                               direction="up")
 
 
 @pytest.mark.asyncio
