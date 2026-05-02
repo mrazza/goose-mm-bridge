@@ -100,8 +100,12 @@ class MattermostAPI:
                            page: int = 0,
                            per_page: int = 60) -> Optional[Dict[str, Any]]:
         return await self._request(
-            f"/teams/{team_id}/posts/search?page={page}&per_page={per_page}",
-            data={"terms": terms},
+            f"/teams/{team_id}/posts/search",
+            data={
+                "terms": terms,
+                "page": page,
+                "per_page": per_page
+            },
             method="POST")
 
     async def search_users(self, term: str) -> Optional[list]:
