@@ -1,9 +1,12 @@
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
+
 import pytest
+
 from mattermost_api import MattermostAPI
 from mcp_server import MattermostMCPServer
+
 
 @pytest.fixture
 def api():
