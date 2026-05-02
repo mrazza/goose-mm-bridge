@@ -58,12 +58,14 @@ async def test_mcp_get_thread_context_with_limit(mcp_server, mock_bridge):
     result = result_list[0].text
     assert "m8" in result and "m9" in result
     assert "m7" not in result
+    assert result.count('m') == 2
     
     # Test limit=2, page=1 (should be m6, m7)
     result_list, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1", "limit": 2, "page": 1})
     result = result_list[0].text
     assert "m6" in result and "m7" in result
     assert "m8" not in result
+    assert result.count('m') == 2
 
 @pytest.mark.asyncio
 async def test_mcp_get_thread_context_all_pages(mcp_server, mock_bridge):

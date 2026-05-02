@@ -41,7 +41,7 @@ class MattermostMCPServer:
         async def get_thread_context(root_id: str,
                                      limit: int = 0,
                                      page: int = 0) -> str:
-            """Fetch the history of a thread starting from the root post.
+            """Fetch the history of a thread starting from the most recent post.
             
             Args:
                 root_id: The ID of the thread root post.
@@ -59,14 +59,14 @@ class MattermostMCPServer:
                 thread = await self.bridge.api.get_thread(root_id,
                                                          per_page=per_page,
                                                          from_post=from_post,
-                                                         direction="down")
+                                                         direction="up")
                 if not thread or "posts" not in thread or not thread["posts"]:
                     break
                 
                 all_posts_dict.update(thread["posts"])
                 
                 # If we got everything there's no more pages so we're done
-                if per_page == 0 or not thread.get("has_next", False):
+                if not thread.get("has_next", False):
                     break
                 
                 # If we are paginating, but we already have enough for the requested page
