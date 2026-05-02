@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
+import json
 
 import pytest
 
@@ -106,8 +107,15 @@ async def test_api_search_posts_pagination(api):
         args, _ = mock_url.call_args
         req = args[0]
         url = req.get_full_url()
-        assert "page=2" in url
-        assert "per_page=10" in url
+        # Check that page and per_page are NOT in the URL as query params
+        assert "page=2" not in url
+        assert "per_page=10" not in url
+
+        # Check that they ARE in the data (body)
+        data = json.loads(req.data.decode())
+        assert data["page"] == 2
+        assert data["per_page"] == 10
+        assert data["terms"] == "query"
 
 
 @pytest.mark.asyncio
