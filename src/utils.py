@@ -1,6 +1,7 @@
+from datetime import datetime
 import json
 import os
-from datetime import datetime
+
 
 def clean_message(message: str, bot_mention: str) -> str:
     """Removes the bot mention and leading punctuation from a message."""
@@ -9,6 +10,7 @@ def clean_message(message: str, bot_mention: str) -> str:
         if message.startswith(",") or message.startswith(":"):
             message = message[1:].strip()
     return message
+
 
 def load_user_mapping(mapping_file: str) -> dict:
     """Loads the user mapping from the JSON file."""
@@ -19,6 +21,7 @@ def load_user_mapping(mapping_file: str) -> dict:
         except Exception as e:
             print(f"[{datetime.now()}] Error loading user mapping: {e}")
     return {}
+
 
 def get_session_key(user_id: str, root_id: str) -> str:
     """Returns a unique session key based on user and thread."""
