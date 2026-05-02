@@ -53,9 +53,12 @@ class MattermostMCPServer:
             
             # We fetch the thread in batches to ensure we get the full history.
             # We use direction="down" starting from the root_id to get all replies.
+            # If limit is 0 (all), we let the server decide the pagination.
+            per_page = 0 if limit == 0 else 60
+            
             while True:
                 thread = await self.bridge.api.get_thread(root_id,
-                                                         per_page=60,
+                                                         per_page=per_page,
                                                          from_post=from_post,
                                                          direction="down")
                 if not thread or "posts" not in thread or not thread["posts"]:
@@ -63,7 +66,7 @@ class MattermostMCPServer:
                 
                 all_posts_dict.update(thread["posts"])
                 
-                if not thread.get("has_next", False):
+                if per_page == 0 or not thread.get("has_next", False):
                     break
                     
                 order = thread.get("order", [])
