@@ -209,7 +209,8 @@ class MattermostBridge:
                     self.sessions[session_key] = {
                         "id": sid,
                         "linux_user": linux_user,
-                        "processed_count": 0
+                        "processed_count": 0,
+                        "had_catchup_hint": False
                     }
                     is_new_session = True
 
@@ -256,7 +257,8 @@ class MattermostBridge:
                     self.sessions[session_key] = {
                         "id": await goose.create_session(),
                         "linux_user": linux_user,
-                        "processed_count": thread_size
+                        "processed_count": thread_size,
+                        "had_catchup_hint": False
                     }
                     goose_sid = self.sessions[session_key]["id"]
                     # Also prepend context for the fresh retry session

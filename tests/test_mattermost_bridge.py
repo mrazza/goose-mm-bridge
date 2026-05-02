@@ -74,6 +74,11 @@ async def test_handle_message(config, mock_api, mock_goose_client):
         assert mock_api.create_post.called
         # First post is "Thinking..."
         assert mock_api.create_post.call_args_list[0][0][1] == ":thinking_face: **Thinking...**"
+        
+        # Verify initial session state
+        assert "user_id_1:post_1" in bridge.sessions
+        assert bridge.sessions["user_id_1:post_1"]["processed_count"] == 0
+        assert bridge.sessions["user_id_1:post_1"]["had_catchup_hint"] is False
 
 @pytest.mark.asyncio
 async def test_handle_message_retry(config, mock_api, mock_goose_client):
