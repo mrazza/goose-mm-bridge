@@ -60,18 +60,25 @@ class MattermostMCPServer:
             else:
                 # Fetch the entire thread history (up to a safety limit)
                 current_page = 0
-                per_page = 60
                 while True:
+                    # Passing per_page=0 uses the Mattermost default (usually 60)
                     thread = await self.bridge.api.get_thread(root_id,
-                                                             per_page=per_page,
+                                                             per_page=0,
                                                              page=current_page)
                     if not thread or "posts" not in thread or not thread["posts"]:
                         break
                     
                     all_posts_dict.update(thread["posts"])
                     
-                    # If the page was partial, we've reached the end
-                    if len(thread.get("order", [])) < per_page:
+                    # Since we use per_page=0 (default), we don't know the exact limit
+                    # but we can stop if we get no new posts or an empty order.
+                    order = thread.get("order", [])
+                    if not order:
+                        break
+                        
+                    # Also stop if we've already seen all these posts (unexpected but safe)
+                    # or if the page is clearly not a full default page (e.g. < 60)
+                    if len(order) < 60:
                         break
                     
                     current_page += 1

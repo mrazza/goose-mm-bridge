@@ -78,13 +78,13 @@ class MattermostAPI:
 
     async def get_thread(self,
                          post_id: str,
-                         per_page: int = 60,
+                         per_page: int = 0,
                          page: int = 0) -> Optional[Dict[str, Any]]:
         """Fetch a thread of posts.
         
         Args:
             post_id: The ID of any post in the thread.
-            per_page: Number of posts to return (default 60).
+            per_page: Number of posts to return (0 for server default, usually 60).
             page: The page to return (default 0). Page 0 is the most recent.
         """
         return await self._request(
