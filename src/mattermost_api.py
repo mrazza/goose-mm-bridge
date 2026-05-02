@@ -80,6 +80,13 @@ class MattermostAPI:
                          post_id: str,
                          per_page: int = 60,
                          page: int = 0) -> Optional[Dict[str, Any]]:
+        """Fetch a thread of posts.
+        
+        Args:
+            post_id: The ID of any post in the thread.
+            per_page: Number of posts to return (default 60).
+            page: The page to return (default 0). Page 0 is the most recent.
+        """
         return await self._request(
             f"/posts/{post_id}/thread?per_page={per_page}&page={page}")
 
