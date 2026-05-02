@@ -88,7 +88,7 @@ class MattermostAPI:
             page: The page to return (default 0). Page 0 is the most recent.
         """
         return await self._request(
-            f"/posts/{post_id}/thread?per_page={per_page}&page={page}&direction=up")
+            f"/posts/{post_id}/thread?perPage={per_page}&page={page}&direction=up")
 
     async def search_posts(self, team_id: str,
                            terms: str) -> Optional[Dict[str, Any]]:

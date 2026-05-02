@@ -22,7 +22,7 @@ async def test_api_get_thread_pagination(api):
         
         args, _ = mock_url.call_args
         req = args[0]
-        assert "per_page=10" in req.get_full_url()
+        assert "perPage=10" in req.get_full_url()
         assert "page=2" in req.get_full_url()
 
 @pytest.fixture
