@@ -397,10 +397,11 @@ async def test_thread_counter_initialization(config, mock_api, mock_goose_client
         await bridge._process_post(post, {"c1": {"type": "D"}})
         assert bridge.thread_counters["p1"] == 1
         
-        # handle_message should NOT call get_thread because counter exists
+        # handle_message should now call get_thread to prime history baseline
         mock_api.get_thread.reset_mock()
         await bridge._handle_message(post, "linux1")
-        assert not mock_api.get_thread.called
+        assert mock_api.get_thread.called
+        assert "p1" in bridge.primed_threads
 
 @pytest.mark.asyncio
 async def test_lazy_prime_failure(config, mock_api, mock_goose_client):
@@ -453,3 +454,90 @@ async def test_catchup_hint_new_session(config, mock_api, mock_goose_client):
         prompt_text = args[1]
         assert "SYSTEM: You have joined an existing thread with 4 earlier messages." in prompt_text
         assert "Use your tools if you need to catch up on the history." in prompt_text
+@pytest.mark.asyncio
+async def test_catchup_existing_session_new_messages(config, mock_api, mock_goose_client):
+    factory = lambda user: mock_goose_client
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=factory)
+    bridge.bot_mention = "@bot"
+    
+    # Existing session, already processed 5 messages
+    bridge.sessions["u1:root1"] = {
+        "id": "session_1",
+        "linux_user": "linux1",
+        "processed_count": 5,
+        "had_catchup_hint": False
+    }
+    bridge.goose_clients["linux1"] = mock_goose_client
+    bridge.primed_threads.add("root1") # Already primed history
+    
+    # Current thread size is 10. (10 - 5 processed - 1 current = 4 new)
+    bridge.thread_counters["root1"] = 10
+    
+    post = {"id": "p10", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "@bot hello", "create_at": 1200}
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        await bridge._handle_message(post, "linux1")
+        
+        args, kwargs = mock_goose_client.prompt.call_args
+        prompt_text = args[1]
+        assert "SYSTEM: There are 4 new messages in this thread since your last response." in prompt_text
+        assert bridge.sessions["u1:root1"]["had_catchup_hint"] is True
+
+@pytest.mark.asyncio
+async def test_catchup_clearing_prompt_after_sync(config, mock_api, mock_goose_client):
+    factory = lambda user: mock_goose_client
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=factory)
+    bridge.bot_mention = "@bot"
+    
+    # Session that had a hint before, now caught up
+    bridge.sessions["u1:root1"] = {
+        "id": "session_1",
+        "linux_user": "linux1",
+        "processed_count": 10,
+        "had_catchup_hint": True
+    }
+    bridge.goose_clients["linux1"] = mock_goose_client
+    bridge.primed_threads.add("root1")
+    
+    # Thread size is 11 (11 - 10 processed - 1 current = 0 new)
+    bridge.thread_counters["root1"] = 11
+    
+    post = {"id": "p11", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "@bot hello", "create_at": 1200}
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        await bridge._handle_message(post, "linux1")
+        
+        args, kwargs = mock_goose_client.prompt.call_args
+        prompt_text = args[1]
+        assert "SYSTEM: You are now caught up with the thread." in prompt_text
+        assert bridge.sessions["u1:root1"]["had_catchup_hint"] is False
+
+@pytest.mark.asyncio
+async def test_no_catchup_needed_when_synced(config, mock_api, mock_goose_client):
+    factory = lambda user: mock_goose_client
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=factory)
+    bridge.bot_mention = "@bot"
+    
+    # Session is perfectly in sync
+    bridge.sessions["u1:root1"] = {
+        "id": "session_1",
+        "linux_user": "linux1",
+        "processed_count": 10,
+        "had_catchup_hint": False
+    }
+    bridge.goose_clients["linux1"] = mock_goose_client
+    bridge.primed_threads.add("root1")
+    
+    # Thread size is 11 (0 new)
+    bridge.thread_counters["root1"] = 11
+    
+    post = {"id": "p11", "user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "@bot hello", "create_at": 1200}
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        await bridge._handle_message(post, "linux1")
+        
+        args, kwargs = mock_goose_client.prompt.call_args
+        prompt_text = args[1]
+        # Should NOT have any SYSTEM hint
+        assert "SYSTEM:" not in prompt_text
+        assert "hello" in prompt_text
