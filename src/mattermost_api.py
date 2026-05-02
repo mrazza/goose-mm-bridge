@@ -76,8 +76,12 @@ class MattermostAPI:
         return await self._request(f"/channels/{channel_id}/posts?since={since}"
                                   )
 
-    async def get_thread(self, post_id: str) -> Optional[Dict[str, Any]]:
-        return await self._request(f"/posts/{post_id}/thread")
+    async def get_thread(self,
+                         post_id: str,
+                         per_page: int = 60,
+                         page: int = 0) -> Optional[Dict[str, Any]]:
+        return await self._request(
+            f"/posts/{post_id}/thread?per_page={per_page}&page={page}")
 
     async def search_posts(self, team_id: str,
                            terms: str) -> Optional[Dict[str, Any]]:

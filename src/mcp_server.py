@@ -38,18 +38,31 @@ class MattermostMCPServer:
             return json.dumps(channels, indent=2)
 
         @self.mcp.tool()
-        async def get_thread_context(root_id: str) -> str:
-            """Fetch the full history of a thread.
+        async def get_thread_context(root_id: str,
+                                     limit: int = 0,
+                                     page: int = 0) -> str:
+            """Fetch the history of a thread.
             
             Args:
                 root_id: The ID of the thread root post.
+                limit: Optional limit on the number of messages to retrieve (0 for all).
+                page: Optional page number when using limit.
             """
-            thread = await self.bridge.api.get_thread(root_id)
+            # Mattermost API defaults to 60 posts per page.
+            # If limit is specified and > 0, we use it as per_page.
+            per_page = limit if limit > 0 else 60
+            thread = await self.bridge.api.get_thread(root_id,
+                                                     per_page=per_page,
+                                                     page=page)
             if not thread or "posts" not in thread:
                 return "Thread not found or empty"
 
             posts = sorted(thread["posts"].values(),
                            key=lambda x: x["create_at"])
+
+            # If limit is 0 (all), and there might be more pages, we could recursively fetch,
+            # but for simplicity we'll stick to what the API returned.
+            # Most threads are within the 60 post default.
 
             # Fetch usernames for attribution
             user_ids = list(set(p["user_id"] for p in posts))
