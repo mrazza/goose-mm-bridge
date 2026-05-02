@@ -308,7 +308,7 @@ class MattermostBridge:
             thread_data = await self.api.get_thread(root_id)
             if thread_data and "posts" in thread_data:
                 # Baseline includes all other users' posts up to and including this one.
-                others_posts = [p for p in thread_data["posts"].values() if p.get("user_id") != self.bot_id]
+                others_posts = [p for p in thread_data["posts"].values() if p.get("user_id") != self.bot_id and p.get("message", "").strip()]
                 self.thread_counters[root_id] = len(others_posts)
             else:
                 self.thread_counters[root_id] = 1
