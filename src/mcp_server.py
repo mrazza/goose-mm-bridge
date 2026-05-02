@@ -77,13 +77,11 @@ class MattermostMCPServer:
                         break
                         
                     # Also stop if we've already seen all these posts (unexpected but safe)
-                    # or if the page is clearly not a full default page (e.g. < 60)
-                    if len(order) < 60:
+                    # or if there are no more pages
+                    if not thread.get("has_next", False):
                         break
                     
                     current_page += 1
-                    if current_page > 20:  # Safety cap (1200+ posts)
-                        break
 
             if not all_posts_dict:
                 return "Thread not found or empty"

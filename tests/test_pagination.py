@@ -52,13 +52,15 @@ async def test_mcp_get_thread_context_all_pages(mcp_server, mock_bridge):
     # Mock multiple pages
     page1 = {
         "posts": {f"p{i}": {"message": f"m{i}", "create_at": i, "user_id": "u1"} for i in range(60, 120)},
-        "order": [f"p{i}" for i in range(60, 120)]
+        "order": [f"p{i}" for i in range(60, 120)],
+        "has_next": True
     }
     page2 = {
         "posts": {f"p{i}": {"message": f"m{i}", "create_at": i, "user_id": "u1"} for i in range(0, 60)},
-        "order": [f"p{i}" for i in range(0, 60)]
+        "order": [f"p{i}" for i in range(0, 60)],
+        "has_next": True
     }
-    page3 = {"posts": {}, "order": []}
+    page3 = {"posts": {}, "order": [], "has_next": False}
     
     mock_bridge.api.get_thread = AsyncMock(side_effect=[page1, page2, page3])
     
