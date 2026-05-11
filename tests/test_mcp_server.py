@@ -144,3 +144,22 @@ async def test_call_tool_unknown(mcp_server):
     from mcp.server.fastmcp.exceptions import ToolError
     with pytest.raises(ToolError, match="Unknown tool: ghost_tool"):
         await mcp_server.mcp.call_tool("ghost_tool", {})
+@pytest.mark.asyncio
+async def test_call_tool_search_users(mcp_server, mock_bridge):
+    mock_bridge.api.search_users = AsyncMock(return_value=[{"id": "u1", "username": "user1"}])
+    
+    result, _ = await mcp_server.mcp.call_tool("search_users", {"term": "user1"})
+    
+    assert len(result) == 1
+    assert "user1" in result[0].text
+    mock_bridge.api.search_users.assert_called_once_with("user1")
+
+@pytest.mark.asyncio
+async def test_call_tool_get_user_info(mcp_server, mock_bridge):
+    mock_bridge.api.get_user = AsyncMock(return_value={"id": "u1", "username": "user1", "email": "user1@example.com"})
+    
+    result, _ = await mcp_server.mcp.call_tool("get_user_info", {"user_id": "u1"})
+    
+    assert len(result) == 1
+    assert "user1@example.com" in result[0].text
+    mock_bridge.api.get_user.assert_called_once_with("u1")
