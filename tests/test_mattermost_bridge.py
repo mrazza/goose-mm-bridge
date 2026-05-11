@@ -662,3 +662,58 @@ async def test_thread_counter_consistency_with_empty_messages(
         args, _ = mock_goose_client.prompt.call_args
         assert "SYSTEM:" not in args[1]
         assert "last" in args[1]
+@pytest.mark.asyncio
+async def test_handle_context_command(config, mock_api, mock_goose_client):
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    bridge.sessions["u1:r1"] = {"id": "s1", "linux_user": "l1"}
+    bridge.goose_clients["l1"] = mock_goose_client
+    mock_goose_client.context_usage = {"s1": {"used": 100, "size": 1000}}
+    
+    post = {"user_id": "u1", "channel_id": "c1", "root_id": "r1", "message": "!context"}
+    await bridge._handle_context_command(post)
+    
+    assert mock_api.create_post.called
+    msg = mock_api.create_post.call_args[0][1]
+    assert "Used: `100` tokens" in msg
+    assert "Total: `1,000` tokens" in msg
+    assert "Usage: `10.0%`" in msg
+
+@pytest.mark.asyncio
+async def test_update_channel_cache(config, mock_api):
+    bridge = MattermostBridge(api=mock_api, config=config)
+    mock_api.get_direct_channels = AsyncMock(return_value=[{"id": "c1", "name": "dm"}])
+    mock_api.get_my_teams = AsyncMock(return_value=[{"id": "t1"}])
+    mock_api.get_my_channels = AsyncMock(return_value=[{"id": "c2", "name": "chan"}])
+    
+    await bridge._update_channel_cache()
+    
+    assert len(bridge.channels_cache) == 2
+    ids = [c["id"] for c in bridge.channels_cache]
+    assert "c1" in ids
+    assert "c2" in ids
+    assert bridge.last_cache_update > 0
+
+@pytest.mark.asyncio
+async def test_handle_message_retry_failure(config, mock_api, mock_goose_client):
+    """Test that if retry also fails, we report the error to the user."""
+    factory = lambda user: mock_goose_client
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=factory)
+    bridge.bot_mention = "@bot"
+    bridge.config.approved_users = []
+
+    post = {"id": "p1", "user_id": "u1", "channel_id": "c1", "message": "@bot hello"}
+
+    async def mock_fail(sid, msg):
+        if False: yield {} # Make it a generator
+        raise RuntimeError("Persistent Failure")
+
+    mock_goose_client.prompt.side_effect = mock_fail
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "l1"}):
+        # We need to manually call _handle_message because _process_post spawns a task
+        await bridge._handle_message(post, "l1")
+        
+        # Should see error message to user
+        error_calls = [c for c in mock_api.create_post.call_args_list if "Sorry, I encountered an error" in str(c)]
+        assert len(error_calls) > 0
+        assert "Persistent Failure" in str(error_calls[0])

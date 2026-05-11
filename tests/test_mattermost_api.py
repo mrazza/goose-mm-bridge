@@ -55,3 +55,120 @@ async def test_api_http_error(api):
 
         res = await api.get_me()
         assert res is None
+@pytest.mark.asyncio
+async def test_get_user(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"id": "u1", "username": "user1"}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response):
+        user = await api.get_user("u1")
+        assert user["id"] == "u1"
+        assert user["username"] == "user1"
+
+@pytest.mark.asyncio
+async def test_get_direct_channels(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'[{"id": "c1"}]'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response):
+        channels = await api.get_direct_channels()
+        assert len(channels) == 1
+        assert channels[0]["id"] == "c1"
+
+@pytest.mark.asyncio
+async def test_get_my_teams(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'[{"id": "t1"}]'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response):
+        teams = await api.get_my_teams()
+        assert len(teams) == 1
+        assert teams[0]["id"] == "t1"
+
+@pytest.mark.asyncio
+async def test_get_my_channels(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'[{"id": "c1"}]'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response):
+        channels = await api.get_my_channels("t1")
+        assert len(channels) == 1
+        assert channels[0]["id"] == "c1"
+
+@pytest.mark.asyncio
+async def test_get_channel_posts(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"posts": {"p1": {"id": "p1"}}}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+        res = await api.get_channel_posts("c1", 1000)
+        assert "p1" in res["posts"]
+        args, _ = mock_url.call_args
+        assert "since=1000" in args[0].get_full_url()
+
+@pytest.mark.asyncio
+async def test_get_thread(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"posts": {"p1": {"id": "p1"}}}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+        res = await api.get_thread("p1", per_page=10, from_create_at=500, direction="down")
+        assert "p1" in res["posts"]
+        url = mock_url.call_args[0][0].get_full_url()
+        assert "perPage=10" in url
+        assert "fromCreateAt=500" in url
+        assert "direction=down" in url
+
+@pytest.mark.asyncio
+async def test_search_posts(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"posts": {"p1": {"id": "p1"}}}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+        res = await api.search_posts("t1", "query")
+        assert "p1" in res["posts"]
+        req = mock_url.call_args[0][0]
+        assert req.get_method() == "POST"
+
+@pytest.mark.asyncio
+async def test_search_users(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'[{"id": "u1"}]'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+        res = await api.search_users("term")
+        assert res[0]["id"] == "u1"
+        req = mock_url.call_args[0][0]
+        assert req.get_method() == "POST"
+
+@pytest.mark.asyncio
+async def test_create_direct_channel(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"id": "c1"}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+        res = await api.create_direct_channel(["u1", "u2"])
+        assert res["id"] == "c1"
+        req = mock_url.call_args[0][0]
+        assert req.get_method() == "POST"
+
+@pytest.mark.asyncio
+async def test_update_post(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"id": "p1", "message": "updated"}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+        res = await api.update_post("p1", "updated")
+        assert res["message"] == "updated"
+        req = mock_url.call_args[0][0]
+        assert req.get_method() == "PUT"
