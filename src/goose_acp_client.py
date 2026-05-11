@@ -25,6 +25,7 @@ class GooseACPClient:
         self.last_id_used = 0
         self._healthy = True
         self._start_lock = asyncio.Lock()
+        self.context_usage: Dict[str, Dict[str, int]] = {}
 
     async def ensure_running(self):
         """Ensures the Goose ACP process is running, restarting it if necessary."""
@@ -382,6 +383,13 @@ class GooseACPClient:
             title = update.get("title")
             if title:
                 return {"type": "thinking", "text": title}
+        elif session_update == "usage_update":
+            used = update.get("used")
+            size = update.get("size")
+            session_id = params.get("sessionId")
+            if session_id:
+                self.context_usage[session_id] = {"used": used, "size": size}
+            return {"type": "usage", "used": used, "size": size}
 
         if self.config.debug:
             print(f"DEBUG: Unknown or unhandled chunk format: {chunk}")

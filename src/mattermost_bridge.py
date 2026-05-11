@@ -107,6 +107,52 @@ class MattermostBridge:
                                        "🛑 *Prompt cancelled.*",
                                        root_id=root_id)
 
+    async def _handle_context_command(self, post: dict):
+        """Handles the !context command to show context window usage."""
+        sender_id = post["user_id"]
+        cid = post["channel_id"]
+        root_id = post.get("root_id") or post["id"]
+        session_key = get_session_key(sender_id, root_id)
+
+        if session_key not in self.sessions:
+            await self.api.create_post(
+                cid,
+                "ℹ️ *No active session for this thread.*",
+                root_id=root_id)
+            return
+
+        session_data = self.sessions[session_key]
+        sid = session_data["id"]
+        target_linux_user = session_data["linux_user"]
+
+        if target_linux_user not in self.goose_clients:
+            await self.api.create_post(
+                cid,
+                "⚠️ *Goose client not found for this session.*",
+                root_id=root_id)
+            return
+
+        client = self.goose_clients[target_linux_user]
+        usage = client.context_usage.get(sid)
+
+        if not usage:
+            await self.api.create_post(
+                cid,
+                "ℹ️ *No context usage information available yet for this session.*",
+                root_id=root_id)
+            return
+
+        used = usage.get("used", 0)
+        size = usage.get("size", 0)
+        percent = (used / size * 100) if size > 0 else 0
+
+        msg = f"📊 **Context Window Usage**\n"
+        msg += f"- Used: `{used:,}` tokens\n"
+        msg += f"- Total: `{size:,}` tokens\n"
+        msg += f"- Usage: `{percent:.1f}%`"
+
+        await self.api.create_post(cid, msg, root_id=root_id)
+
     async def _prune_sessions(self):
         """Prunes old sessions if the count exceeds MAX_SESSIONS."""
         if len(self.sessions) <= self.config.max_sessions:
@@ -347,6 +393,11 @@ class MattermostBridge:
         # Special Command: !stop
         if message.lower() == "!stop":
             await self._handle_stop_command(post)
+            return
+
+        # Special Command: !context
+        if message.lower() == "!context":
+            await self._handle_context_command(post)
             return
 
         # Check if we should respond
