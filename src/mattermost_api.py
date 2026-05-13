@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime
 import json
 import ssl
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 import urllib.error
 import urllib.request
 
@@ -56,6 +56,26 @@ class MattermostAPI:
             print(f"[{datetime.now()}] MM Request Error ({method} {path}): {e}")
             return None
 
+    async def _request_raw(self,
+                           path: str,
+                           method: str = "GET") -> Optional[bytes]:
+        """Makes an asynchronous request to the Mattermost API and returns raw bytes."""
+        return await asyncio.to_thread(self._sync_request_raw, path, method)
+
+    def _sync_request_raw(self, path: str, method: str) -> Optional[bytes]:
+        """Makes a synchronous request to the Mattermost API and returns raw bytes."""
+        url = f"{self.base_url}{path}"
+        req = urllib.request.Request(url, headers=self.headers, method=method)
+        try:
+            with urllib.request.urlopen(req,
+                                        context=self.ssl_context) as response:
+                return response.read()
+        except Exception as e:
+            print(
+                f"[{datetime.now()}] MM Raw Request Error ({method} {path}): {e}"
+            )
+            return None
+
     async def get_me(self) -> Optional[Dict[str, Any]]:
         return await self._request("/users/me")
 
@@ -75,6 +95,10 @@ class MattermostAPI:
                                 since: int) -> Optional[Dict[str, Any]]:
         return await self._request(f"/channels/{channel_id}/posts?since={since}"
                                   )
+
+    async def get_post(self, post_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a single post by ID."""
+        return await self._request(f"/posts/{post_id}")
 
     async def get_thread(self,
                          post_id: str,
@@ -143,3 +167,11 @@ class MattermostAPI:
         if props:
             data["props"] = props
         return await self._request(f"/posts/{post_id}", data=data, method="PUT")
+
+    async def get_file_info(self, file_id: str) -> Optional[Dict[str, Any]]:
+        """Get metadata for a file."""
+        return await self._request(f"/files/{file_id}/info")
+
+    async def download_file(self, file_id: str) -> Optional[bytes]:
+        """Download a file's raw data."""
+        return await self._request_raw(f"/files/{file_id}")
