@@ -112,7 +112,14 @@ class MattermostMCPServer:
             formatted = []
             for p in posts:
                 username = user_map.get(p["user_id"], "unknown")
-                formatted.append(f"[Sender: @{username}] {p['message']}")
+                msg = p.get('message', '')
+                
+                # Add attachment indicator
+                file_ids = p.get('file_ids', [])
+                if file_ids:
+                    msg = f"[Has {len(file_ids)} attachment(s)] {msg}"
+                
+                formatted.append(f"[Sender: @{username}] {msg}")
 
             return "\n".join(formatted)
 
@@ -204,6 +211,66 @@ class MattermostMCPServer:
 
             await self.bridge.api.create_post(channel["id"], message)
             return f"Direct message sent to channel {channel['id']}"
+
+        @self.mcp.tool()
+        async def get_post_details(post_id: str) -> str:
+            """Retrieve the full metadata for a specific post, including attachment IDs.
+            
+            Args:
+                post_id: The ID of the post to retrieve.
+            """
+            post = await self.bridge.api.get_post(post_id)
+            if not post:
+                return f"Post {post_id} not found"
+            return json.dumps(post, indent=2)
+
+        @self.mcp.tool()
+        async def list_post_attachments(post_id: str) -> str:
+            """List names and IDs of files attached to a post.
+            
+            Args:
+                post_id: The ID of the post.
+            """
+            post = await self.bridge.api.get_post(post_id)
+            if not post or 'file_ids' not in post or not post['file_ids']:
+                return "No attachments found for this post"
+            
+            attachments = []
+            for fid in post['file_ids']:
+                info = await self.bridge.api.get_file_info(fid)
+                if info:
+                    attachments.append({
+                        "id": fid,
+                        "name": info.get("name", "unknown"),
+                        "extension": info.get("extension", ""),
+                        "size": info.get("size", 0)
+                    })
+                else:
+                    attachments.append({"id": fid, "name": "unknown"})
+            
+            return json.dumps(attachments, indent=2)
+
+        @self.mcp.tool()
+        async def download_attachment(file_id: str, destination_path: str) -> str:
+            """Download an attachment from Mattermost to the local filesystem.
+            
+            Args:
+                file_id: The ID of the file to download.
+                destination_path: The local path where the file should be saved.
+            """
+            data = await self.bridge.api.download_file(file_id)
+            if not data:
+                return "Failed to download file"
+            
+            try:
+                import os
+                # Ensure directory exists
+                os.makedirs(os.path.dirname(os.path.abspath(destination_path)), exist_ok=True)
+                with open(destination_path, "wb") as f:
+                    f.write(data)
+                return f"File downloaded successfully to {destination_path}"
+            except Exception as e:
+                return f"Error saving file: {str(e)}"
 
     async def run(self, host: str, port: int):
         """Run the MCP server using Streamable HTTP transport."""
