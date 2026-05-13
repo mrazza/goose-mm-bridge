@@ -55,6 +55,7 @@ async def test_api_http_error(api):
 
         res = await api.get_me()
         assert res is None
+
 @pytest.mark.asyncio
 async def test_get_user(api):
     mock_response = MagicMock()
@@ -65,6 +66,38 @@ async def test_get_user(api):
         user = await api.get_user("u1")
         assert user["id"] == "u1"
         assert user["username"] == "user1"
+
+@pytest.mark.asyncio
+async def test_get_post(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"id": "p1", "message": "hello"}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response):
+        post = await api.get_post("p1")
+        assert post["id"] == "p1"
+        assert post["message"] == "hello"
+
+@pytest.mark.asyncio
+async def test_get_file_info(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"id": "f1", "name": "test.txt"}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response):
+        info = await api.get_file_info("f1")
+        assert info["id"] == "f1"
+        assert info["name"] == "test.txt"
+
+@pytest.mark.asyncio
+async def test_download_file(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'raw file data'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response):
+        data = await api.download_file("f1")
+        assert data == b'raw file data'
 
 @pytest.mark.asyncio
 async def test_get_direct_channels(api):
