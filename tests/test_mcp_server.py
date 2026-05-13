@@ -1,5 +1,7 @@
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
+from unittest.mock import patch
+from unittest.mock import mock_open
 
 import pytest
 
@@ -24,7 +26,7 @@ def mcp_server(mock_bridge):
 @pytest.mark.asyncio
 async def test_list_tools(mcp_server):
     tools = await mcp_server.mcp.list_tools()
-    assert len(tools) == 7
+    assert len(tools) == 10
     tool_names = [t.name for t in tools]
     assert "send_message" in tool_names
     assert "get_channels" in tool_names
@@ -33,6 +35,9 @@ async def test_list_tools(mcp_server):
     assert "search_users" in tool_names
     assert "get_user_info" in tool_names
     assert "send_direct_message" in tool_names
+    assert "get_post_details" in tool_names
+    assert "list_post_attachments" in tool_names
+    assert "download_attachment" in tool_names
 
 
 @pytest.mark.asyncio
@@ -65,7 +70,8 @@ async def test_call_tool_get_thread_context(mcp_server, mock_bridge):
                 "p1": {
                     "message": "first",
                     "create_at": 100,
-                    "user_id": "u1"
+                    "user_id": "u1",
+                    "file_ids": ["f1"]
                 },
                 "p2": {
                     "message": "second",
@@ -81,9 +87,8 @@ async def test_call_tool_get_thread_context(mcp_server, mock_bridge):
                                                {"root_id": "r1"})
 
     assert len(result) == 1
-    assert "[Sender: @user_u1] first" in result[0].text
+    assert "[Sender: @user_u1] [Has 1 attachment(s)] first" in result[0].text
     assert "[Sender: @user_u2] second" in result[0].text
-    # Now called with per_page=60, from_create_at=0, direction="down" by default in the pagination loop
     mock_bridge.api.get_thread.assert_any_call("r1",
                                                per_page=0,
                                                from_create_at=0,
@@ -133,7 +138,6 @@ async def test_call_tool_send_direct_message(mcp_server, mock_bridge):
 
     assert "Direct message sent" in result[0].text
     mock_bridge.api.create_direct_channel.assert_called_once()
-    # Should include both user1 and me
     user_ids = mock_bridge.api.create_direct_channel.call_args[0][0]
     assert "u1_id" in user_ids
     assert "me_id" in user_ids
@@ -144,6 +148,7 @@ async def test_call_tool_unknown(mcp_server):
     from mcp.server.fastmcp.exceptions import ToolError
     with pytest.raises(ToolError, match="Unknown tool: ghost_tool"):
         await mcp_server.mcp.call_tool("ghost_tool", {})
+
 @pytest.mark.asyncio
 async def test_call_tool_search_users(mcp_server, mock_bridge):
     mock_bridge.api.search_users = AsyncMock(return_value=[{"id": "u1", "username": "user1"}])
@@ -163,3 +168,37 @@ async def test_call_tool_get_user_info(mcp_server, mock_bridge):
     assert len(result) == 1
     assert "user1@example.com" in result[0].text
     mock_bridge.api.get_user.assert_called_once_with("u1")
+
+@pytest.mark.asyncio
+async def test_call_tool_get_post_details(mcp_server, mock_bridge):
+    mock_bridge.api.get_post = AsyncMock(return_value={"id": "p1", "file_ids": ["f1"]})
+    
+    result, _ = await mcp_server.mcp.call_tool("get_post_details", {"post_id": "p1"})
+    
+    assert "f1" in result[0].text
+    mock_bridge.api.get_post.assert_called_once_with("p1")
+
+@pytest.mark.asyncio
+async def test_call_tool_list_post_attachments(mcp_server, mock_bridge):
+    mock_bridge.api.get_post = AsyncMock(return_value={"id": "p1", "file_ids": ["f1"]})
+    mock_bridge.api.get_file_info = AsyncMock(return_value={"id": "f1", "name": "test.png"})
+    
+    result, _ = await mcp_server.mcp.call_tool("list_post_attachments", {"post_id": "p1"})
+    
+    assert "test.png" in result[0].text
+    mock_bridge.api.get_file_info.assert_called_once_with("f1")
+
+@pytest.mark.asyncio
+async def test_call_tool_download_attachment(mcp_server, mock_bridge):
+    mock_bridge.api.download_file = AsyncMock(return_value=b"content")
+    
+    with patch("builtins.open", mock_open()) as mocked_file:
+        with patch("os.makedirs"):
+            result, _ = await mcp_server.mcp.call_tool("download_attachment", {
+                "file_id": "f1",
+                "destination_path": "/tmp/test.png"
+            })
+            
+            assert "successfully" in result[0].text
+            mock_bridge.api.download_file.assert_called_once_with("f1")
+            mocked_file.assert_called_once_with("/tmp/test.png", "wb")
