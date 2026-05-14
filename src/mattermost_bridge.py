@@ -253,7 +253,7 @@ class MattermostBridge:
                                                props=props)
                 last_update_time = current_time
 
-    async def _handle_message(self, post: dict, linux_user: Optional[str]):
+    async def _handle_message(self, post: dict, linux_user: Optional[str], username: str):
         """Handles an incoming message from Mattermost."""
         sender_id = post["user_id"]
         message = post.get("message", "").strip()
@@ -278,8 +278,15 @@ class MattermostBridge:
         async with self.session_locks[session_key]:
             try:
                 message = clean_message(message, self.bot_mention)
+
+                # Align with get_thread_context formatting
+                file_ids = post.get('file_ids', [])
+                if file_ids:
+                    message = f"[Has {len(file_ids)} attachment(s)] {message}"
+                message = f"[Sender: @{username}] {message}"
+
                 print(
-                    f"[{datetime.now()}] User {sender_id} says: {message[:100]}..."
+                    f"[{datetime.now()}] User {username} ({sender_id}) says: {message[:100]}..."
                 )
 
                 is_new_session = False
@@ -446,7 +453,7 @@ class MattermostBridge:
             return
 
         # Spawn task to handle message
-        task = asyncio.create_task(self._handle_message(post, linux_user))
+        task = asyncio.create_task(self._handle_message(post, linux_user, username))
         self.background_tasks.add(task)
         task.add_done_callback(self.background_tasks.discard)
 
