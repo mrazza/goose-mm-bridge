@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, mock_open
 from unittest.mock import patch
 import urllib.error
 
@@ -205,3 +205,19 @@ async def test_update_post(api):
         assert res["message"] == "updated"
         req = mock_url.call_args[0][0]
         assert req.get_method() == "PUT"
+
+@pytest.mark.asyncio
+async def test_upload_file(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"file_infos": [{"id": "f1"}]}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+        with patch('os.path.exists', return_value=True):
+            with patch('mimetypes.guess_type', return_value=('text/plain', None)):
+                with patch('builtins.open', mock_open(read_data=b"file content")):
+                    res = await api.upload_file("c1", "test.txt")
+                    assert res["file_infos"][0]["id"] == "f1"
+                    req = mock_url.call_args[0][0]
+                    assert req.get_method() == "POST"
+                    assert "multipart/form-data" in req.get_header("Content-type")
