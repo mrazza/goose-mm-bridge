@@ -1,10 +1,13 @@
 import asyncio
 from datetime import datetime
 import json
+import mimetypes
+import os
 import ssl
 from typing import Any, Dict, Optional, Union
 import urllib.error
 import urllib.request
+import uuid
 
 from config import default_config
 
@@ -148,12 +151,15 @@ class MattermostAPI:
             channel_id: str,
             message: str,
             root_id: Optional[str] = None,
+            file_ids: Optional[list] = None,
             props: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         data = {
             "channel_id": channel_id,
             "message": message,
             "root_id": root_id
         }
+        if file_ids:
+            data["file_ids"] = file_ids
         if props:
             data["props"] = props
         return await self._request("/posts", data=data, method="POST")
@@ -175,3 +181,58 @@ class MattermostAPI:
     async def download_file(self, file_id: str) -> Optional[bytes]:
         """Download a file's raw data."""
         return await self._request_raw(f"/files/{file_id}")
+
+    async def upload_file(self, channel_id: str, file_path: str) -> Optional[Dict[str, Any]]:
+        """Upload a file to a channel.
+        
+        Args:
+            channel_id: The ID of the channel to upload the file to.
+            file_path: The local path of the file to upload.
+        """
+        return await asyncio.to_thread(self._sync_upload_file, channel_id, file_path)
+
+    def _sync_upload_file(self, channel_id: str, file_path: str) -> Optional[Dict[str, Any]]:
+        """Synchronously upload a file to a channel."""
+        if not os.path.exists(file_path):
+            print(f"File not found: {file_path}")
+            return None
+
+        filename = os.path.basename(file_path)
+        mime_type, _ = mimetypes.guess_type(file_path)
+        mime_type = mime_type or 'application/octet-stream'
+
+        boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
+        
+        with open(file_path, 'rb') as f:
+            file_content = f.read()
+
+        # Build multipart/form-data
+        parts = []
+        parts.append(f'--{boundary}'.encode())
+        parts.append(f'Content-Disposition: form-data; name="channel_id"'.encode())
+        parts.append(b'')
+        parts.append(channel_id.encode())
+        
+        parts.append(f'--{boundary}'.encode())
+        parts.append(f'Content-Disposition: form-data; name="files"; filename="{filename}"'.encode())
+        parts.append(f'Content-Type: {mime_type}'.encode())
+        parts.append(b'')
+        parts.append(file_content)
+        
+        parts.append(f'--{boundary}--'.encode())
+        parts.append(b'')
+        
+        body = b'\r\n'.join(parts)
+        
+        url = f"{self.base_url}/files"
+        headers = self.headers.copy()
+        headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+        headers["Content-Length"] = str(len(body))
+        
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, context=self.ssl_context) as response:
+                return json.loads(response.read().decode())
+        except Exception as e:
+            print(f"[{datetime.now()}] MM Upload Error: {e}")
+            return None

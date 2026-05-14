@@ -17,18 +17,29 @@ class MattermostMCPServer:
         @self.mcp.tool()
         async def send_message(channel_id: str,
                                message: str,
-                               root_id: Optional[str] = None) -> str:
+                               root_id: Optional[str] = None,
+                               file_path: Optional[str] = None) -> str:
             """Send a message to a Mattermost channel.
             
             Args:
                 channel_id: The ID of the channel to send the message to.
                 message: The message text.
                 root_id: Optional thread root ID to reply to a specific thread.
+                file_path: Optional local path to a file to attach to the message.
             """
+            file_ids = None
+            if file_path:
+                upload_result = await self.bridge.api.upload_file(channel_id, file_path)
+                if upload_result and "file_infos" in upload_result and upload_result["file_infos"]:
+                    file_ids = [info["id"] for info in upload_result["file_infos"]]
+                else:
+                    return f"Failed to upload attachment: {file_path}"
+
             await self.bridge.api.create_post(channel_id,
                                               message,
-                                              root_id=root_id)
-            return "Message sent successfully"
+                                              root_id=root_id,
+                                              file_ids=file_ids)
+            return "Message sent successfully" + (" with attachment" if file_ids else "")
 
         @self.mcp.tool()
         async def get_channels() -> str:
@@ -181,12 +192,14 @@ class MattermostMCPServer:
 
         @self.mcp.tool()
         async def send_direct_message(usernames: List[str],
-                                      message: str) -> str:
+                                      message: str,
+                                      file_path: Optional[str] = None) -> str:
             """Send a direct message to one or more users.
             
             Args:
                 usernames: List of usernames (with or without @).
                 message: The message text.
+                file_path: Optional local path to a file to attach.
             """
             user_ids = []
             for uname in usernames:
@@ -209,8 +222,16 @@ class MattermostMCPServer:
             if not channel:
                 return "Failed to create direct channel"
 
-            await self.bridge.api.create_post(channel["id"], message)
-            return f"Direct message sent to channel {channel['id']}"
+            file_ids = None
+            if file_path:
+                upload_result = await self.bridge.api.upload_file(channel["id"], file_path)
+                if upload_result and "file_infos" in upload_result and upload_result["file_infos"]:
+                    file_ids = [info["id"] for info in upload_result["file_infos"]]
+                else:
+                    return f"Failed to upload attachment: {file_path}"
+
+            await self.bridge.api.create_post(channel["id"], message, file_ids=file_ids)
+            return f"Direct message sent to channel {channel['id']}" + (" with attachment" if file_ids else "")
 
         @self.mcp.tool()
         async def get_post_details(post_id: str) -> str:

@@ -50,7 +50,8 @@ async def test_call_tool_send_message(mcp_server, mock_bridge):
     assert result[0].text == "Message sent successfully"
     mock_bridge.api.create_post.assert_called_once_with("c1",
                                                         "hello",
-                                                        root_id="r1")
+                                                        root_id="r1",
+                                                        file_ids=None)
 
 
 @pytest.mark.asyncio
@@ -141,6 +142,38 @@ async def test_call_tool_send_direct_message(mcp_server, mock_bridge):
     user_ids = mock_bridge.api.create_direct_channel.call_args[0][0]
     assert "u1_id" in user_ids
     assert "me_id" in user_ids
+
+
+@pytest.mark.asyncio
+async def test_call_tool_send_message_with_attachment(mcp_server, mock_bridge):
+    mock_bridge.api.upload_file = AsyncMock(return_value={"file_infos": [{"id": "f1"}]})
+    arguments = {"channel_id": "c1", "message": "hello", "file_path": "test.txt"}
+
+    result, _ = await mcp_server.mcp.call_tool("send_message", arguments)
+
+    assert "with attachment" in result[0].text
+    mock_bridge.api.upload_file.assert_called_once_with("c1", "test.txt")
+    mock_bridge.api.create_post.assert_called_once_with("c1", "hello", root_id=None, file_ids=["f1"])
+
+
+@pytest.mark.asyncio
+async def test_call_tool_send_direct_message_with_attachment(mcp_server, mock_bridge):
+    mock_bridge.api.get_me = AsyncMock(return_value={"id": "me_id"})
+    mock_bridge.api.search_users = AsyncMock(return_value=[{"id": "u1_id", "username": "user1"}])
+    mock_bridge.api.create_direct_channel = AsyncMock(return_value={"id": "dm_channel"})
+    mock_bridge.api.upload_file = AsyncMock(return_value={"file_infos": [{"id": "f1"}]})
+    
+    arguments = {
+        "usernames": ["@user1"],
+        "message": "private hello",
+        "file_path": "test.txt"
+    }
+
+    result, _ = await mcp_server.mcp.call_tool("send_direct_message", arguments)
+
+    assert "with attachment" in result[0].text
+    mock_bridge.api.upload_file.assert_called_once_with("dm_channel", "test.txt")
+    mock_bridge.api.create_post.assert_called_once_with("dm_channel", "private hello", file_ids=["f1"])
 
 
 @pytest.mark.asyncio
