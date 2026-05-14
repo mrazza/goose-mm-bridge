@@ -455,8 +455,8 @@ async def test_concurrency_locking(config, mock_api, mock_goose_client):
     with patch('mattermost_bridge.load_user_mapping',
                return_value={"u1": "linux1"}):
         # Start two tasks for the same thread
-        t1 = asyncio.create_task(bridge._handle_message(post, "linux1"))
-        t2 = asyncio.create_task(bridge._handle_message(post, "linux1"))
+        t1 = asyncio.create_task(bridge._handle_message(post, "linux1", "user1"))
+        t2 = asyncio.create_task(bridge._handle_message(post, "linux1", "user1"))
 
         await asyncio.gather(t1, t2)
 
@@ -711,9 +711,42 @@ async def test_handle_message_retry_failure(config, mock_api, mock_goose_client)
     
     with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "l1"}):
         # We need to manually call _handle_message because _process_post spawns a task
-        await bridge._handle_message(post, "l1")
+        await bridge._handle_message(post, "l1", "user1")
         
         # Should see error message to user
         error_calls = [c for c in mock_api.create_post.call_args_list if "Sorry, I encountered an error" in str(c)]
         assert len(error_calls) > 0
         assert "Persistent Failure" in str(error_calls[0])
+
+@pytest.mark.asyncio
+async def test_handle_message_formatting(config, mock_api, mock_goose_client):
+    """Test that messages sent to Goose include sender and attachment info."""
+    factory = lambda user: mock_goose_client
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=factory)
+    bridge.bot_mention = "@bot"
+    
+    post = {
+        "id": "p1",
+        "user_id": "u1",
+        "channel_id": "c1",
+        "message": "@bot check this out",
+        "file_ids": ["f1", "f2"]
+    }
+    
+    # We'll use a fresh mock to track the exact prompt text
+    mock_goose_client.prompt = MagicMock()
+    async def mock_prompt_gen(sid, msg):
+        yield {"type": "final", "text": "done"}
+    mock_goose_client.prompt.side_effect = mock_prompt_gen
+
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        await bridge._handle_message(post, "linux1", "user1")
+        
+        args, kwargs = mock_goose_client.prompt.call_args
+        prompt_text = args[1]
+        
+        assert "[Has 2 attachment(s)]" in prompt_text
+        assert "[Sender: @user1]" in prompt_text
+        assert "check this out" in prompt_text
+        assert "@bot" not in prompt_text
+
