@@ -381,8 +381,12 @@ class GooseACPClient:
             }
         elif session_update == "tool_call_update":
             title = update.get("title")
+            status = update.get("status")
             if title:
                 return {"type": "thinking", "text": title}
+            if status == "completed":
+                # Recognize completion to avoid "unknown" logs
+                return {"type": "thinking", "text": "Tool execution completed"}
         elif session_update == "usage_update":
             used = update.get("used")
             size = update.get("size")
