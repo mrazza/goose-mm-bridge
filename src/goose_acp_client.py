@@ -386,7 +386,7 @@ class GooseACPClient:
                 return {"type": "thinking", "text": title}
             if status == "completed":
                 # Recognize completion to avoid "unknown" logs
-                return {"type": "thinking", "text": "Tool execution completed"}
+                return {"type": "thinking", "text": "working..."}
         elif session_update == "usage_update":
             used = update.get("used")
             size = update.get("size")
