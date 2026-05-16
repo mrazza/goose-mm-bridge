@@ -115,6 +115,32 @@ async def test_parse_update_chunk(client):
     assert parsed["type"] == "tool"
     assert parsed["name"] == "test_tool"
 
+    # Test tool_call_update with title
+    chunk = {
+        "method": "session/update",
+        "params": {
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "title": "Performing search..."
+            }
+        }
+    }
+    parsed = client._parse_update_chunk(chunk)
+    assert parsed == {"type": "thinking", "text": "Performing search..."}
+
+    # Test tool_call_update with completed status
+    chunk = {
+        "method": "session/update",
+        "params": {
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "status": "completed"
+            }
+        }
+    }
+    parsed = client._parse_update_chunk(chunk)
+    assert parsed == {"type": "thinking", "text": "Tool execution completed"}
+
 
 @pytest.mark.asyncio
 async def test_process_death_during_prompt(client):
