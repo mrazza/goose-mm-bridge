@@ -139,7 +139,7 @@ async def test_parse_update_chunk(client):
         }
     }
     parsed = client._parse_update_chunk(chunk)
-    assert parsed == {"type": "thinking", "text": "Tool execution completed"}
+    assert parsed == {"type": "thinking", "text": "working..."}
 
 
 @pytest.mark.asyncio
