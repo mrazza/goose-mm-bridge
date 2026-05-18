@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import os
-from typing import List
+from typing import List, Optional
 
 from dotenv import load_dotenv
 
