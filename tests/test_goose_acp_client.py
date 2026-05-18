@@ -749,3 +749,59 @@ async def test_cancel_prompt(client):
         assert res_inactive is False
         assert not mock_notif.called
 
+async def test_start_command_line_and_env(config):
+    config.goose_provider = "anthropic"
+    config.goose_anthropic_api_key = "ant-key"
+    config.goose_builtin_extensions = ["developer"]
+    
+    client = GooseACPClient(config=config)
+    
+    with patch('asyncio.create_subprocess_exec', new_callable=AsyncMock) as mock_exec:
+        mock_process = MagicMock()
+        mock_process.returncode = None
+        mock_exec.return_value = mock_process
+        
+        # Mock initialize handshake
+        with patch.object(client, '_send_raw_request', new_callable=AsyncMock) as mock_raw:
+            mock_raw.return_value = {"result": {}}
+            await client._start()
+            
+            args, kwargs = mock_exec.call_args
+            cmd = args
+            env = kwargs.get('env', {})
+            
+            assert "goose" in cmd
+            assert "acp" in cmd
+            assert "--with-builtin" in cmd
+            assert "developer" in cmd
+            assert env.get("GOOSE_PROVIDER") == "anthropic"
+            assert env.get("ANTHROPIC_API_KEY") == "ant-key"
+
+@pytest.mark.asyncio
+async def test_start_with_linux_user_and_env(config):
+    config.goose_provider = "openai"
+    config.goose_openai_api_key = "sk-test"
+    
+    client = GooseACPClient(linux_user="testuser", config=config)
+    
+    with patch('asyncio.create_subprocess_exec', new_callable=AsyncMock) as mock_exec,\
+         patch('pwd.getpwnam') as mock_pwd:
+        
+        mock_pwd.return_value.pw_dir = "/home/testuser"
+        mock_process = MagicMock()
+        mock_process.returncode = None
+        mock_exec.return_value = mock_process
+        
+        with patch.object(client, '_send_raw_request', new_callable=AsyncMock) as mock_raw:
+            mock_raw.return_value = {"result": {}}
+            await client._start()
+            
+            args, kwargs = mock_exec.call_args
+            cmd = args
+            
+            assert "sudo" in cmd
+            assert "testuser" in cmd
+            assert "/usr/bin/env" in cmd
+            assert "GOOSE_PROVIDER=openai" in cmd
+            assert "OPENAI_API_KEY=sk-test" in cmd
+            assert "goose" in cmd

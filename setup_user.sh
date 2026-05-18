@@ -24,10 +24,9 @@ else
     sudo useradd -m -s /usr/sbin/nologin "$TARGET_USER"
 fi
 
-# 2. Create goose config directory
-echo "Setting up Goose configuration for $TARGET_USER..."
-sudo mkdir -p "$GOOSE_CONFIG_DIR"
-sudo chown -R "$TARGET_USER:$TARGET_USER" "/home/$TARGET_USER/.config"
+# 2. Setup user's home directory (if needed)
+echo "Ensuring home directory permissions for $TARGET_USER..."
+sudo chown -R "$TARGET_USER:$TARGET_USER" "/home/$TARGET_USER"
 
 # 3. Configure Sudoers
 echo "Configuring sudoers for $BRIDGE_USER to run as $TARGET_USER..."

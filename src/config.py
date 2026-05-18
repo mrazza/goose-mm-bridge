@@ -28,6 +28,14 @@ class Config:
     mcp_host: str = os.getenv("MCP_HOST", "127.0.0.1")
     mcp_port: int = int(os.getenv("MCP_PORT", "8000"))
     mcp_enabled: bool = os.getenv("MCP_ENABLED", "true").lower() == "true"
+    goose_provider: Optional[str] = os.getenv("GOOSE_PROVIDER")
+    goose_model: Optional[str] = os.getenv("GOOSE_MODEL")
+    goose_openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
+    goose_anthropic_api_key: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
+    goose_google_api_key: Optional[str] = os.getenv("GOOGLE_API_KEY")
+    goose_mistral_api_key: Optional[str] = os.getenv("MISTRAL_API_KEY")
+    goose_builtin_extensions: List[str] = None
+    goose_mcp_servers: List[dict] = None
 
     def __post_init__(self):
         if self.approved_users is None:
@@ -36,6 +44,31 @@ class Config:
                 for u in os.getenv("APPROVED_USERS", "").split(",")
                 if u.strip()
             ]
+        if self.goose_provider is None:
+            self.goose_provider = os.getenv("GOOSE_PROVIDER")
+        if self.goose_model is None:
+            self.goose_model = os.getenv("GOOSE_MODEL")
+        if self.goose_openai_api_key is None:
+            self.goose_openai_api_key = os.getenv("OPENAI_API_KEY")
+        if self.goose_anthropic_api_key is None:
+            self.goose_anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        if self.goose_google_api_key is None:
+            self.goose_google_api_key = os.getenv("GOOGLE_API_KEY")
+        if self.goose_mistral_api_key is None:
+            self.goose_mistral_api_key = os.getenv("MISTRAL_API_KEY")
+        if self.goose_builtin_extensions is None:
+            self.goose_builtin_extensions = [
+                e.strip()
+                for e in os.getenv("GOOSE_BUILTIN_EXTENSIONS", "").split(",")
+                if e.strip()
+            ]
+        if self.goose_mcp_servers is None:
+            mcp_json = os.getenv("GOOSE_MCP_SERVERS", "[]")
+            try:
+                import json
+                self.goose_mcp_servers = json.loads(mcp_json)
+            except Exception:
+                self.goose_mcp_servers = []
 
 
 # Default instance
