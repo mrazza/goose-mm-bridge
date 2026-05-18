@@ -50,15 +50,43 @@ class GooseACPClient:
     async def _start(self):
         """Starts the Goose ACP process."""
         print(f"[{datetime.now()}] Starting Goose ACP process...")
+
+        # Construct environment for the Goose process
+        env = os.environ.copy()
+        if self.config.goose_provider:
+            env["GOOSE_PROVIDER"] = self.config.goose_provider
+        if self.config.goose_model:
+            env["GOOSE_MODEL"] = self.config.goose_model
+        if self.config.goose_openai_api_key:
+            env["OPENAI_API_KEY"] = self.config.goose_openai_api_key
+        if self.config.goose_anthropic_api_key:
+            env["ANTHROPIC_API_KEY"] = self.config.goose_anthropic_api_key
+        if self.config.goose_google_api_key:
+            env["GOOGLE_API_KEY"] = self.config.goose_google_api_key
+        if self.config.goose_mistral_api_key:
+            env["MISTRAL_API_KEY"] = self.config.goose_mistral_api_key
+
         cmd = ["goose", "acp"]
+        if self.config.goose_builtin_extensions:
+            cmd.extend(["--with-builtin", ",".join(self.config.goose_builtin_extensions)])
+
         if self.linux_user:
             import pwd
             try:
-                home_dir = pwd.getpwnam(self.linux_user).pw_dir
-                cmd = ["sudo", "-n", "-u", self.linux_user, "-D", home_dir
-                      ] + cmd
+                pw = pwd.getpwnam(self.linux_user)
+                home_dir = pw.pw_dir
+                # Use /usr/bin/env to inject variables when running with sudo
+                env_args = []
+                for key in [
+                        "GOOSE_PROVIDER", "GOOSE_MODEL", "OPENAI_API_KEY",
+                        "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY"
+                ]:
+                    if key in env:
+                        env_args.append(f"{key}={env[key]}")
+
+                cmd = ["sudo", "-n", "-u", self.linux_user, "-D", home_dir, "/usr/bin/env"] + env_args + cmd
             except KeyError:
-                cmd = ["sudo", "-n", "-u", self.linux_user] + cmd
+                cmd = ["sudo", "-n", "-u", self.linux_user, "/usr/bin/env"] + cmd
 
         print(f"[{datetime.now()}] Process command line: {cmd}")
         self.process = await asyncio.create_subprocess_exec(
@@ -66,6 +94,7 @@ class GooseACPClient:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
             limit=10 * 1024 * 1024  # 10MB buffer for large JSON-RPC messages
         )
         asyncio.create_task(self._read_stdout())
@@ -444,12 +473,16 @@ class GooseACPClient:
         return False
 
     def _get_mcp_servers(self):
-        if not self.config.mcp_enabled or not self.http_supported:
-            return []
+        servers = []
+        if self.config.mcp_enabled and self.http_supported:
+            servers.append({
+                "type": "http",
+                "name": "mattermost-bridge",
+                "url": f"http://{self.config.mcp_host}:{self.config.mcp_port}/mcp",
+                "headers": []
+            })
 
-        return [{
-            "type": "http",
-            "name": "mattermost-bridge",
-            "url": f"http://{self.config.mcp_host}:{self.config.mcp_port}/mcp",
-            "headers": []
-        }]
+        if self.config.goose_mcp_servers:
+            servers.extend(self.config.goose_mcp_servers)
+
+        return servers

@@ -46,3 +46,24 @@ def test_config_approved_users_empty():
     with patch.dict(os.environ, {"APPROVED_USERS": ""}):
         config = Config(approved_users=None)
         assert config.approved_users == []
+
+def test_config_goose_extensions_and_mcps():
+    env = {
+        "GOOSE_BUILTIN_EXTENSIONS": "developer, summarize",
+        "GOOSE_MCP_SERVERS": '[{"name": "test", "type": "stdio"}]'
+    }
+    with patch.dict(os.environ, env):
+        config = Config(goose_builtin_extensions=None, goose_mcp_servers=None)
+        assert config.goose_builtin_extensions == ["developer", "summarize"]
+        assert len(config.goose_mcp_servers) == 1
+        assert config.goose_mcp_servers[0]["name"] == "test"
+
+def test_config_goose_env_vars():
+    env = {
+        "GOOSE_PROVIDER": "openai",
+        "OPENAI_API_KEY": "sk-test"
+    }
+    with patch.dict(os.environ, env):
+        config = Config()
+        assert config.goose_provider == "openai"
+        assert config.goose_openai_api_key == "sk-test"
