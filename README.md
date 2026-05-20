@@ -115,8 +115,16 @@ The bridge is configured via environment variables in the `.env` file:
 | `REQUIRE_USER_MAPPING` | If `true`, only users explicitly listed in the mapping file can use the bot. | `false` |
 | `MAX_SESSIONS` | The maximum number of active thread contexts to keep before recycling. | `100` |
 | `MCP_ENABLED` | Enables the internal MCP server, allowing Goose to call Mattermost tools. | `true` |
-| `MCP_HOST` | The host address the internal MCP server binds to. | `localhost` |
-| `MCP_PORT` | The port used by the internal MCP server. | `8080` |
+| `MCP_HOST` | The host address the internal MCP server binds to. | `127.0.0.1` |
+| `MCP_PORT` | The port used by the internal MCP server. | `8000` |
+| `GOOSE_PROVIDER` | The LLM provider configured inside the Goose process (e.g. `openai`, `anthropic`, `google`, `mistral`). Overrides any global configurations. | (None) |
+| `GOOSE_MODEL` | The specific model identifier Goose will execute (e.g., `claude-3-5-sonnet-latest`, `gpt-4o`). Overrides global configurations. | (None) |
+| `OPENAI_API_KEY` | OpenAI API Key injected into the Goose subprocess. Overrides global keys. | (None) |
+| `ANTHROPIC_API_KEY` | Anthropic API Key injected into the Goose subprocess. Overrides global keys. | (None) |
+| `GOOGLE_API_KEY` | Google API Key injected into the Goose subprocess. Overrides global keys. | (None) |
+| `MISTRAL_API_KEY` | Mistral API Key injected into the Goose subprocess. Overrides global keys. | (None) |
+| `GOOSE_BUILTIN_EXTENSIONS` | Comma-separated list of built-in Goose extension toolkits to load (e.g., `developer,memory`). | (None) |
+| `GOOSE_MCP_SERVERS` | A single-line JSON array of Model Context Protocol server configuration objects to register with Goose. | `[]` |
 
 > **💡 Note on Threading**: The bridge uses Mattermost thread IDs (`root_id`) to isolate conversations. This allows you to have multiple, independent discussions with the bot simultaneously—even within the same channel. Mentioning the bot in a reply will continue that specific conversation thread.
 
