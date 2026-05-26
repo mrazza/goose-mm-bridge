@@ -38,3 +38,10 @@ def test_load_user_mapping(tmp_path):
 
     assert load_user_mapping(str(mapping_file)) == data
     assert load_user_mapping("non_existent.json") == {}
+
+
+def test_load_user_mapping_exception(tmp_path):
+    # Test line 21-22 error handling
+    mapping_file = tmp_path / "mapping.json"
+    mapping_file.write_text("{invalid json}")
+    assert load_user_mapping(str(mapping_file)) == {}
