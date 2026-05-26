@@ -275,3 +275,396 @@ async def test_get_mcp_servers(client):
     client.config.mcp_enabled = False
     servers = client._get_mcp_servers()
     assert len(servers) == 0
+
+@pytest.mark.asyncio
+async def test_ensure_running_died_restarts(client):
+    # Tests lines 35-45 (died process)
+    mock_process = MagicMock()
+    mock_process.returncode = 127
+    client.process = mock_process
+    
+    future = asyncio.Future()
+    client.pending_requests[1] = future
+    client.session_queues["s1"] = asyncio.Queue()
+
+    with patch('asyncio.create_subprocess_exec', new_callable=AsyncMock) as mock_exec:
+        mock_new_process = MagicMock()
+        mock_new_process.returncode = None
+        mock_exec.return_value = mock_new_process
+
+        with patch.object(client, '_send_raw_request', new_callable=AsyncMock) as mock_raw:
+            mock_raw.return_value = {"result": {}}
+            await client.ensure_running()
+
+            assert mock_exec.called
+            assert client.process == mock_new_process
+            assert future.done()
+            with pytest.raises(RuntimeError, match="Goose ACP process terminated"):
+                await future
+            assert len(client.pending_requests) == 0
+            assert len(client.session_queues) == 0
+
+@pytest.mark.asyncio
+async def test_start_with_linux_user_and_pwd(config):
+    # Tests lines 58 (pwd.getpwnam)
+    config.debug = True
+    client = GooseACPClient(config=config, linux_user="testuser")
+    
+    mock_pw = MagicMock()
+    mock_pw.pw_dir = "/home/testuser"
+    
+    with patch('pwd.getpwnam', return_value=mock_pw):
+        with patch('asyncio.create_subprocess_exec', new_callable=AsyncMock) as mock_exec:
+            mock_process = MagicMock()
+            mock_process.returncode = None
+            mock_exec.return_value = mock_process
+            
+            with patch.object(client, '_send_raw_request', new_callable=AsyncMock) as mock_raw:
+                mock_raw.return_value = {"result": {}}
+                await client._start()
+                
+                args, kwargs = mock_exec.call_args
+                assert "sudo" in args
+                assert "testuser" in args
+                assert "/home/testuser" in args
+
+@pytest.mark.asyncio
+async def test_start_handshake_failure(config):
+    # Tests lines 95-103
+    client = GooseACPClient(config=config)
+    
+    with patch('asyncio.create_subprocess_exec', new_callable=AsyncMock) as mock_exec:
+        mock_process = MagicMock()
+        mock_process.returncode = None
+        mock_process.terminate = MagicMock()
+        mock_exec.return_value = mock_process
+        
+        with patch.object(client, '_send_raw_request', new_callable=AsyncMock) as mock_raw:
+            mock_raw.side_effect = Exception("Handshake timeout")
+            
+            with pytest.raises(Exception, match="Handshake timeout"):
+                await client._start()
+            
+            assert mock_process.terminate.called
+            assert client.process is None
+
+@pytest.mark.asyncio
+async def test_start_handshake_failure_terminate_exception(config):
+    # Tests lines 100-101 (terminate raises exception)
+    client = GooseACPClient(config=config)
+    
+    with patch('asyncio.create_subprocess_exec', new_callable=AsyncMock) as mock_exec:
+        mock_process = MagicMock()
+        mock_process.returncode = None
+        mock_process.terminate = MagicMock(side_effect=Exception("Failed to terminate"))
+        mock_exec.return_value = mock_process
+        
+        with patch.object(client, '_send_raw_request', new_callable=AsyncMock) as mock_raw:
+            mock_raw.side_effect = Exception("Handshake timeout")
+            
+            with pytest.raises(Exception, match="Handshake timeout"):
+                await client._start()
+            
+            assert mock_process.terminate.called
+            assert client.process is None
+
+@pytest.mark.asyncio
+async def test_read_stdout_empty_and_invalid_json(client):
+    # Tests lines 113, 118, 136-137
+    mock_process = MagicMock()
+    mock_process.stdout.readline = AsyncMock(side_effect=[
+        b"\n",  # empty line_str -> continue (line 118)
+        b"invalid json\n",  # parsing error -> print error (line 136-137)
+        b""  # EOF -> break (line 113)
+    ])
+    mock_process.stdout.at_eof = MagicMock(side_effect=[False, False, False, True])
+    client.process = mock_process
+    
+    await client._read_stdout()
+
+@pytest.mark.asyncio
+async def test_read_stdout_closes_pending_requests(client):
+    # Tests lines 141-142
+    mock_process = MagicMock()
+    mock_process.stdout.readline = AsyncMock(return_value=b"")
+    mock_process.stdout.at_eof = MagicMock(return_value=True)
+    client.process = mock_process
+    
+    fut = asyncio.Future()
+    client.pending_requests[1] = fut
+    
+    await client._read_stdout()
+    assert fut.done()
+    with pytest.raises(RuntimeError, match="Goose ACP stdout closed"):
+        await fut
+
+@pytest.mark.asyncio
+async def test_read_stderr(client):
+    # Tests lines 152-156
+    mock_process = MagicMock()
+    mock_process.stderr.readline = AsyncMock(side_effect=[
+        b"error msg\n",
+        b""
+    ])
+    mock_process.stderr.at_eof = MagicMock(side_effect=[False, False, True])
+    client.process = mock_process
+    
+    await client._read_stderr()
+
+@pytest.mark.asyncio
+async def test_send_notification(client):
+    # Tests lines 189-198
+    client.config.debug = True
+    mock_process = MagicMock()
+    mock_process.returncode = None
+    mock_process.stdin = MagicMock()
+    mock_process.stdin.write = MagicMock()
+    mock_process.stdin.drain = AsyncMock()
+    client.process = mock_process
+    
+    with patch.object(client, 'ensure_running', new_callable=AsyncMock):
+        await client.send_notification("session/cancel", {"sessionId": "s1"})
+        assert mock_process.stdin.write.called
+        assert mock_process.stdin.drain.called
+
+@pytest.mark.asyncio
+async def test_send_raw_request_terminate_exception(client):
+    # Tests lines 231-232
+    mock_process = MagicMock()
+    mock_process.returncode = None
+    mock_process.stdin = MagicMock()
+    mock_process.stdin.write = MagicMock()
+    mock_process.stdin.drain = AsyncMock()
+    mock_process.terminate = MagicMock(side_effect=Exception("Failed to terminate"))
+    client.process = mock_process
+    
+    with patch.object(client, '_send_raw_request', new_callable=AsyncMock) as mock_raw:
+        # Trigger an asyncio.TimeoutError in send_request
+        mock_raw.side_effect = asyncio.TimeoutError()
+        with patch.object(client, 'ensure_running', new_callable=AsyncMock):
+            with pytest.raises(asyncio.TimeoutError):
+                await client.send_request("test")
+            assert mock_process.terminate.called
+
+@pytest.mark.asyncio
+async def test_create_session_error(client):
+    # Tests line 243
+    with patch.object(client, 'send_request', new_callable=AsyncMock) as mock_send:
+        mock_send.return_value = {"error": "Too many sessions"}
+        with patch.object(client, 'ensure_running', new_callable=AsyncMock):
+            with pytest.raises(Exception, match="Failed to create session"):
+                await client.create_session()
+
+@pytest.mark.asyncio
+async def test_prompt_session_not_found(client):
+    # Tests line 256
+    with pytest.raises(ValueError, match="Session s1 not found"):
+        async for _ in client.prompt("s1", "hello"):
+            pass
+
+@pytest.mark.asyncio
+async def test_prompt_clears_queue_and_success_flow(client):
+    # Tests lines 261, 296-297
+    session_id = "s1"
+    client.session_queues[session_id] = asyncio.Queue()
+    # Put an item that should be cleared
+    await client.session_queues[session_id].put("stale")
+    
+    mock_process = MagicMock()
+    mock_process.returncode = None
+    client.process = mock_process
+    
+    prompt_res_fut = asyncio.Future()
+    
+    async def mock_send_request(*args, **kwargs):
+        return await prompt_res_fut
+        
+    client.send_request = mock_send_request
+    
+    # We start prompt, which clears the stale items and blocks waiting for send_request
+    chunks = []
+    
+    async def run_prompt():
+        async for chunk in client.prompt(session_id, "hello"):
+            chunks.append(chunk)
+            
+    prompt_task = asyncio.create_task(run_prompt())
+    # Give it a tiny sleep to execute up to blocking on asyncio.wait
+    await asyncio.sleep(0.01)
+    
+    # Now put the chunks and set prompt_res_fut result
+    await client.session_queues[session_id].put({
+        "method": "session/prompt/next",
+        "params": {
+            "chunk": {
+                "type": "text",
+                "text": "hello "
+            }
+        }
+    })
+    await client.session_queues[session_id].put({
+        "method": "session/prompt/next",
+        "params": {
+            "chunk": {
+                "type": "text",
+                "text": "world"
+            }
+        }
+    })
+    
+    # Wait another moment to process chunks
+    await asyncio.sleep(0.1)
+    
+    # Finish the send_request future
+    prompt_res_fut.set_result({"result": "success"})
+    await prompt_task
+        
+    assert len(chunks) == 3
+    assert chunks[0] == {"type": "content", "text": "hello "}
+    assert chunks[1] == {"type": "content", "text": "hello world"}
+    assert chunks[2] == {"type": "final", "text": "hello world"}
+
+@pytest.mark.asyncio
+async def test_prompt_result_error(client):
+    # Tests line 310
+    session_id = "s1"
+    client.session_queues[session_id] = asyncio.Queue()
+    
+    prompt_res_fut = asyncio.Future()
+    prompt_res_fut.set_result({"error": "Prompt failed"})
+    
+    async def mock_send_request(*args, **kwargs):
+        return await prompt_res_fut
+        
+    client.send_request = mock_send_request
+    
+    await client.session_queues[session_id].put(None)
+    
+    with pytest.raises(Exception, match="Goose error: Prompt failed"):
+        async for _ in client.prompt(session_id, "hello"):
+            pass
+
+@pytest.mark.asyncio
+async def test_prompt_inactivity_timeout(client):
+    # Tests lines 322-337
+    session_id = "s1"
+    client.session_queues[session_id] = asyncio.Queue()
+    client.config.rpc_timeout = 0.05
+    
+    mock_process = MagicMock()
+    mock_process.returncode = None
+    mock_process.terminate = MagicMock()
+    client.process = mock_process
+    
+    # Create an unresolved future for send_request
+    prompt_res_fut = asyncio.Future()
+    
+    async def mock_send_request(*args, **kwargs):
+        return await prompt_res_fut
+        
+    client.send_request = mock_send_request
+    
+    # Don't put anything in queue, let it block on queue.get
+    with pytest.raises(asyncio.TimeoutError, match="Request session/prompt timed out"):
+        async for _ in client.prompt(session_id, "hello"):
+            pass
+            
+    assert client._healthy is False
+    assert mock_process.terminate.called
+
+@pytest.mark.asyncio
+async def test_prompt_inactivity_timeout_terminate_exception(client):
+    # Tests lines 333-334
+    session_id = "s1"
+    client.session_queues[session_id] = asyncio.Queue()
+    client.config.rpc_timeout = 0.05
+    
+    mock_process = MagicMock()
+    mock_process.returncode = None
+    mock_process.terminate = MagicMock(side_effect=Exception("Failed to terminate"))
+    client.process = mock_process
+    
+    # Create an unresolved future for send_request
+    prompt_res_fut = asyncio.Future()
+    
+    async def mock_send_request(*args, **kwargs):
+        return await prompt_res_fut
+        
+    client.send_request = mock_send_request
+    
+    # Don't put anything in queue, let it block on queue.get
+    with pytest.raises(asyncio.TimeoutError, match="Request session/prompt timed out"):
+        async for _ in client.prompt(session_id, "hello"):
+            pass
+            
+    assert client._healthy is False
+    assert mock_process.terminate.called
+
+@pytest.mark.asyncio
+async def test_parse_update_chunk_tool_call(client):
+    # Tests line 377
+    chunk = {
+        "method": "session/update",
+        "params": {
+            "update": {
+                "sessionUpdate": "tool_call",
+                "title": "Performing tool call"
+            }
+        }
+    }
+    parsed = client._parse_update_chunk(chunk)
+    assert parsed == {"type": "tool", "name": "Performing tool call", "arguments": {}}
+
+@pytest.mark.asyncio
+async def test_parse_update_chunk_usage_and_debug(client):
+    # Tests lines 390-400
+    client.config.debug = True
+    chunk = {
+        "method": "session/update",
+        "params": {
+            "sessionId": "s1",
+            "update": {
+                "sessionUpdate": "usage_update",
+                "used": 100,
+                "size": 1000
+            }
+        }
+    }
+    parsed = client._parse_update_chunk(chunk)
+    assert parsed == {"type": "usage", "used": 100, "size": 1000}
+    assert client.context_usage["s1"] == {"used": 100, "size": 1000}
+    
+    # Test unknown format log in debug
+    chunk_unknown = {
+        "method": "session/update",
+        "params": {
+            "update": {
+                "sessionUpdate": "unknown_format"
+            }
+        }
+    }
+    parsed_unknown = client._parse_update_chunk(chunk_unknown)
+    assert parsed_unknown is None
+
+@pytest.mark.asyncio
+async def test_drain_remaining_chunks_no_session(client):
+    # Tests line 406
+    res = await client._drain_remaining_chunks("invalid", "initial")
+    assert res == "initial"
+
+@pytest.mark.asyncio
+async def test_cancel_prompt(client):
+    # Tests lines 419-426
+    client.active_prompts["s1"] = 100
+    
+    with patch.object(client, 'send_notification', new_callable=AsyncMock) as mock_notif:
+        res = await client.cancel_prompt("s1")
+        assert res is True
+        mock_notif.assert_called_once_with("session/cancel", {"sessionId": "s1", "messageId": 100})
+        
+        # Test cancel on inactive session
+        mock_notif.reset_mock()
+        res_inactive = await client.cancel_prompt("s2")
+        assert res_inactive is False
+        assert not mock_notif.called
+

@@ -750,3 +750,171 @@ async def test_handle_message_formatting(config, mock_api, mock_goose_client):
         assert "check this out" in prompt_text
         assert "@bot" not in prompt_text
 
+
+@pytest.mark.asyncio
+async def test_handle_message_empty(config, mock_api):
+    bridge = MattermostBridge(api=mock_api, config=config)
+    post = {"user_id": "u1", "message": "", "channel_id": "c1"}
+    await bridge._handle_message(post, "l1", "u1")
+    assert not mock_api.create_post.called
+
+@pytest.mark.asyncio
+async def test_handle_stop_command_cancel_active_task(config, mock_api, mock_goose_client):
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    mock_task = MagicMock()
+    bridge.active_tasks["u1:r1"] = mock_task
+    post = {"user_id": "u1", "channel_id": "c1", "root_id": "r1", "message": "!stop"}
+    await bridge._handle_stop_command(post)
+    mock_task.cancel.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_handle_context_command_no_session(config, mock_api):
+    bridge = MattermostBridge(api=mock_api, config=config)
+    post = {"user_id": "u1", "channel_id": "c1", "root_id": "r1", "message": "!context"}
+    await bridge._handle_context_command(post)
+    assert mock_api.create_post.called
+    assert "No active session" in mock_api.create_post.call_args[0][1]
+
+@pytest.mark.asyncio
+async def test_handle_context_command_no_client(config, mock_api):
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.sessions["u1:r1"] = {"id": "s1", "linux_user": "l1"}
+    post = {"user_id": "u1", "channel_id": "c1", "root_id": "r1", "message": "!context"}
+    await bridge._handle_context_command(post)
+    assert "Goose client not found" in mock_api.create_post.call_args[0][1]
+
+@pytest.mark.asyncio
+async def test_handle_context_command_no_usage(config, mock_api, mock_goose_client):
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    bridge.sessions["u1:r1"] = {"id": "s1", "linux_user": "l1"}
+    bridge.goose_clients["l1"] = mock_goose_client
+    mock_goose_client.context_usage = {}
+    post = {"user_id": "u1", "channel_id": "c1", "root_id": "r1", "message": "!context"}
+    await bridge._handle_context_command(post)
+    assert "No context usage information available" in mock_api.create_post.call_args[0][1]
+
+@pytest.mark.asyncio
+async def test_session_pruning_with_locks_and_queues(config, mock_api, mock_goose_client):
+    config.max_sessions = 1
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    bridge.sessions = {
+        "u1:r1": {"id": "s1", "linux_user": "l1"},
+        "u1:r2": {"id": "s2", "linux_user": "l1"}
+    }
+    bridge.goose_clients["l1"] = mock_goose_client
+    mock_goose_client.session_queues = {"s1": MagicMock(), "s2": MagicMock()}
+    bridge.session_locks = {"u1:r1": MagicMock(), "u1:r2": MagicMock()}
+
+    await bridge._prune_sessions()
+    assert "u1:r1" not in bridge.sessions
+    assert "s1" not in mock_goose_client.session_queues
+    assert "u1:r1" not in bridge.session_locks
+
+@pytest.mark.asyncio
+async def test_stream_response_thinking_trace_unsimplified_and_delayed(config, mock_api, mock_goose_client):
+    import time
+    bridge = MattermostBridge(api=mock_api, config=config)
+    config.goose_thinking_trace = True
+    config.goose_thinking_trace_simplified = False
+
+    async def mock_thinking_prompt(sid, msg):
+        yield {"type": "thinking", "text": "thought 1"}
+        yield {"type": "content", "text": "part 1"}
+        yield {"type": "final", "text": "final ans"}
+
+    mock_goose_client.prompt.side_effect = mock_thinking_prompt
+
+    time_values = [100.0, 100.0, 101.5, 102.0]
+    with patch("time.time", side_effect=time_values):
+        await bridge._stream_response_to_mattermost(mock_goose_client, "s1", "msg", "c1", "r1")
+
+    assert mock_api.update_post.called
+
+@pytest.mark.asyncio
+async def test_stream_response_initial_post_fails(config, mock_api, mock_goose_client):
+    import time
+    bridge = MattermostBridge(api=mock_api, config=config)
+    mock_api.create_post = AsyncMock(side_effect=[None, {"id": "p1"}])
+    
+    async def mock_simple_prompt(sid, msg):
+        yield {"type": "thinking", "text": "thought 1"}
+        yield {"type": "final", "text": "final ans"}
+
+    mock_goose_client.prompt.side_effect = mock_simple_prompt
+
+    time_values = [100.0, 100.0, 102.0, 103.0]
+    with patch("time.time", side_effect=time_values):
+        await bridge._stream_response_to_mattermost(mock_goose_client, "s1", "msg", "c1", "r1")
+    
+    assert mock_api.create_post.call_count == 2
+
+@pytest.mark.asyncio
+async def test_process_post_stop_and_context(config, mock_api, mock_goose_client):
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    bridge.bot_id = "bot_id"
+    bridge.bot_mention = "@bot"
+    
+    post_stop = {"user_id": "u1", "channel_id": "c1", "message": "!stop", "id": "p1"}
+    await bridge._process_post(post_stop, {"c1": {"type": "O"}})
+    
+    post_context = {"user_id": "u1", "channel_id": "c1", "message": "!context", "id": "p2"}
+    await bridge._process_post(post_context, {"c1": {"type": "O"}})
+    
+    assert mock_api.create_post.called
+
+@pytest.mark.asyncio
+async def test_process_post_no_thread_posts(config, mock_api, mock_goose_client):
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    bridge.bot_mention = "@bot"
+    mock_api.get_thread = AsyncMock(return_value=None)
+    
+    post = {"user_id": "u1", "channel_id": "c1", "message": "@bot hello", "id": "p1"}
+    with patch('mattermost_bridge.load_user_mapping', return_value={"u1": "linux1"}):
+        await bridge._process_post(post, {"c1": {"type": "O"}})
+        await wait_for_bridge(bridge)
+        assert bridge.thread_counters["p1"] == 1
+
+@pytest.mark.asyncio
+async def test_run_initialize_fails(config, mock_api):
+    bridge = MattermostBridge(api=mock_api, config=config)
+    mock_api.get_me = AsyncMock(return_value=None)
+    await bridge.run()
+    assert not mock_api.get_direct_channels.called
+
+@pytest.mark.asyncio
+async def test_polling_posts_data_edge_cases(config, mock_api):
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.last_since = 100
+    
+    mock_api.get_channel_posts = AsyncMock(side_effect=[
+        None,
+        {"posts": {"p1": {"create_at": 50, "id": "p1", "user_id": "u1", "message": "msg"}}},
+        KeyboardInterrupt()
+    ])
+    
+    mock_api.get_direct_channels = AsyncMock(return_value=[{"id": "c1"}])
+    mock_api.get_my_teams = AsyncMock(return_value=[])
+    
+    with patch("asyncio.sleep", return_value=None):
+        await bridge.run()
+        
+    assert bridge.last_since == 100
+
+@pytest.mark.asyncio
+async def test_run_keyboard_interrupt_termination_fails(config, mock_api, mock_goose_client):
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.goose_clients["l1"] = mock_goose_client
+    
+    mock_process = MagicMock()
+    mock_process.returncode = None
+    mock_process.terminate = MagicMock(side_effect=Exception("Failed to terminate"))
+    mock_goose_client.process = mock_process
+    
+    mock_api.get_direct_channels = AsyncMock(return_value=[])
+    mock_api.get_my_teams = AsyncMock(return_value=[])
+    
+    with patch("asyncio.sleep", side_effect=KeyboardInterrupt()):
+        await bridge.run()
+        
+    assert mock_process.terminate.called
+

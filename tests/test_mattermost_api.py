@@ -221,3 +221,59 @@ async def test_upload_file(api):
                     req = mock_url.call_args[0][0]
                     assert req.get_method() == "POST"
                     assert "multipart/form-data" in req.get_header("Content-type")
+
+@pytest.mark.asyncio
+async def test_api_general_exception(api):
+    with patch('urllib.request.urlopen') as mock_url:
+        mock_url.side_effect = Exception("Generic connection failure")
+        res = await api.get_me()
+        assert res is None
+
+@pytest.mark.asyncio
+async def test_api_raw_exception(api):
+    with patch('urllib.request.urlopen') as mock_url:
+        mock_url.side_effect = Exception("Generic connection failure")
+        res = await api.download_file("f1")
+        assert res is None
+
+@pytest.mark.asyncio
+async def test_create_post_with_file_ids_and_props(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"id": "post_id"}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response):
+        post = await api.create_post(
+            "channel_id",
+            "hello message",
+            root_id="root_id",
+            file_ids=["f1", "f2"],
+            props={"from_bot": "true"}
+        )
+        assert post["id"] == "post_id"
+
+@pytest.mark.asyncio
+async def test_update_post_with_props(api):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"id": "p1", "message": "updated"}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen', return_value=mock_response):
+        res = await api.update_post("p1", "updated", props={"edited": "true"})
+        assert res["message"] == "updated"
+
+@pytest.mark.asyncio
+async def test_upload_file_non_existent(api):
+    with patch('os.path.exists', return_value=False):
+        res = await api.upload_file("c1", "nonexistent.txt")
+        assert res is None
+
+@pytest.mark.asyncio
+async def test_upload_file_exception(api):
+    with patch('os.path.exists', return_value=True):
+        with patch('mimetypes.guess_type', return_value=('text/plain', None)):
+            with patch('builtins.open', mock_open(read_data=b"file content")):
+                with patch('urllib.request.urlopen', side_effect=Exception("Upload limit exceeded")):
+                    res = await api.upload_file("c1", "test.txt")
+                    assert res is None
+

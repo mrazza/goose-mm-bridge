@@ -235,3 +235,202 @@ async def test_call_tool_download_attachment(mcp_server, mock_bridge):
             assert "successfully" in result[0].text
             mock_bridge.api.download_file.assert_called_once_with("f1")
             mocked_file.assert_called_once_with("/tmp/test.png", "wb")
+
+@pytest.mark.asyncio
+async def test_call_tool_send_message_upload_fail(mcp_server, mock_bridge):
+    mock_bridge.api.upload_file = AsyncMock(return_value=None)
+    arguments = {"channel_id": "c1", "message": "hello", "file_path": "test.txt"}
+    result, _ = await mcp_server.mcp.call_tool("send_message", arguments)
+    assert "Failed to upload attachment" in result[0].text
+
+@pytest.mark.asyncio
+async def test_call_tool_get_thread_context_no_thread(mcp_server, mock_bridge):
+    mock_bridge.api.get_thread = AsyncMock(return_value=None)
+    result, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1"})
+    assert "Thread not found or empty" in result[0].text
+
+@pytest.mark.asyncio
+async def test_call_tool_get_thread_context_empty_posts(mcp_server, mock_bridge):
+    mock_bridge.api.get_thread = AsyncMock(return_value={"posts": {}})
+    result, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1"})
+    assert "Thread not found or empty" in result[0].text
+
+@pytest.mark.asyncio
+async def test_call_tool_get_thread_context_limit(mcp_server, mock_bridge):
+    # Setup posts: we want to test three pagination/limit branches:
+    # 1) break early: limit > 0 and len(all_posts_dict) >= (page + 1) * limit + 1
+    # 2) end <= 0 -> "No more messages"
+    # 3) posts is empty -> "No messages found in the specified range"
+    
+    mock_bridge.api.get_user = AsyncMock(return_value={"username": "user1"})
+
+    # Test case 1: "No more messages" when page is out of bounds (end <= 0)
+    mock_bridge.api.get_thread = AsyncMock(return_value={
+        "posts": {
+            "p1": {"id": "p1", "create_at": 100, "user_id": "u1", "message": "m1"},
+            "p2": {"id": "p2", "create_at": 200, "user_id": "u1", "message": "m2"}
+        },
+        "order": ["p1", "p2"],
+        "has_next": False
+    })
+    result, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1", "limit": 1, "page": 5})
+    assert "No more messages" in result[0].text
+
+    # Test case 2: Empty slice/posts -> "No messages found in the specified range"
+    # We can patch 'sorted' to return [] so that posts becomes empty and triggers line 113.
+    mock_bridge.api.get_thread = AsyncMock(return_value={
+        "posts": {
+            "p1": {"id": "p1", "create_at": 100, "user_id": "u1", "message": "m1"}
+        },
+        "order": ["p1"],
+        "has_next": False
+    })
+    with patch("mcp_server.sorted", return_value=[]):
+        result, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1"})
+        assert "No messages found in the specified range" in result[0].text
+
+    # Test case 3: Break early during pagination fetching
+    # We want (page + 1) * limit + 1 to be exceeded so that we break on the first page!
+    # page=0, limit=1. Then (page+1)*limit + 1 = 2.
+    # Our first return value has 2 posts. So it should break immediately and not request the second page.
+    mock_bridge.api.get_thread = AsyncMock(return_value={
+        "posts": {
+            "p1": {"id": "p1", "create_at": 100, "user_id": "u1", "message": "m1"},
+            "p2": {"id": "p2", "create_at": 200, "user_id": "u1", "message": "m2"}
+        },
+        "order": ["p1", "p2"],
+        "has_next": True  # normally would fetch next page, but should break early
+    })
+    result, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1", "limit": 1, "page": 0})
+    assert "m2" in result[0].text
+    # Check that it was only called once because we broke early
+    assert mock_bridge.api.get_thread.call_count == 1
+
+    # Test case 4: order is empty or not in thread -> break
+    # To cover lines 94-95, we also want to test a successful page fetch sequence where order is NOT empty
+    # and has_next becomes False on the second page. Let's trace lines 94-95 in the loop:
+    # We call get_thread, it returns order=["p1"], and we update from_create_at = thread["posts"]["p1"]["create_at"].
+    # Then it goes back to start of loop and calls get_thread again with from_create_at=100.
+    mock_bridge.api.get_thread = AsyncMock(side_effect=[
+        {
+            "posts": {
+                "p1": {"id": "p1", "create_at": 100, "user_id": "u1", "message": "m1"}
+            },
+            "order": ["p1"],
+            "has_next": True
+        },
+        {
+            "posts": {},
+            "order": [],
+            "has_next": False
+        }
+    ])
+    result, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1"})
+    assert "m1" in result[0].text
+    assert mock_bridge.api.get_thread.call_count == 2
+
+    # Let's hit line 93 (if not order: break) directly with has_next=True but order is empty!
+    mock_bridge.api.get_thread = AsyncMock(return_value={
+        "posts": {
+            "p1": {"id": "p1", "create_at": 100, "user_id": "u1", "message": "m1"}
+        },
+        "order": [],
+        "has_next": True
+    })
+    result, _ = await mcp_server.mcp.call_tool("get_thread_context", {"root_id": "r1"})
+    assert "m1" in result[0].text
+    assert mock_bridge.api.get_thread.call_count == 1
+
+@pytest.mark.asyncio
+async def test_call_tool_search_messages_no_teams(mcp_server, mock_bridge):
+    mock_bridge.api.get_my_teams = AsyncMock(return_value=[])
+    result, _ = await mcp_server.mcp.call_tool("search_messages", {"terms": "query"})
+    assert "No teams found to search in" in result[0].text
+
+@pytest.mark.asyncio
+async def test_call_tool_search_messages_no_results(mcp_server, mock_bridge):
+    mock_bridge.api.get_my_teams = AsyncMock(return_value=[{"id": "t1"}])
+    mock_bridge.api.search_posts = AsyncMock(return_value=None)
+    result, _ = await mcp_server.mcp.call_tool("search_messages", {"terms": "query"})
+    assert "No messages found" in result[0].text
+
+@pytest.mark.asyncio
+async def test_call_tool_send_direct_message_no_users(mcp_server, mock_bridge):
+    mock_bridge.api.search_users = AsyncMock(return_value=[])
+    result, _ = await mcp_server.mcp.call_tool("send_direct_message", {
+        "usernames": ["@nonexistent"],
+        "message": "hello"
+    })
+    assert "No valid users found to message" in result[0].text
+
+@pytest.mark.asyncio
+async def test_call_tool_send_direct_message_create_fail(mcp_server, mock_bridge):
+    mock_bridge.api.get_me = AsyncMock(return_value={"id": "me_id"})
+    mock_bridge.api.search_users = AsyncMock(return_value=[{"id": "u1_id", "username": "user1"}])
+    mock_bridge.api.create_direct_channel = AsyncMock(return_value=None)
+    result, _ = await mcp_server.mcp.call_tool("send_direct_message", {
+        "usernames": ["@user1"],
+        "message": "hello"
+    })
+    assert "Failed to create direct channel" in result[0].text
+
+@pytest.mark.asyncio
+async def test_call_tool_send_direct_message_upload_fail(mcp_server, mock_bridge):
+    mock_bridge.api.get_me = AsyncMock(return_value={"id": "me_id"})
+    mock_bridge.api.search_users = AsyncMock(return_value=[{"id": "u1_id", "username": "user1"}])
+    mock_bridge.api.create_direct_channel = AsyncMock(return_value={"id": "dm_channel"})
+    mock_bridge.api.upload_file = AsyncMock(return_value=None)
+    result, _ = await mcp_server.mcp.call_tool("send_direct_message", {
+        "usernames": ["@user1"],
+        "message": "hello",
+        "file_path": "test.txt"
+    })
+    assert "Failed to upload attachment" in result[0].text
+
+@pytest.mark.asyncio
+async def test_call_tool_get_post_details_not_found(mcp_server, mock_bridge):
+    mock_bridge.api.get_post = AsyncMock(return_value=None)
+    result, _ = await mcp_server.mcp.call_tool("get_post_details", {"post_id": "p1"})
+    assert "not found" in result[0].text
+
+@pytest.mark.asyncio
+async def test_call_tool_list_post_attachments_no_attachments(mcp_server, mock_bridge):
+    mock_bridge.api.get_post = AsyncMock(return_value={"id": "p1", "file_ids": []})
+    result, _ = await mcp_server.mcp.call_tool("list_post_attachments", {"post_id": "p1"})
+    assert "No attachments found" in result[0].text
+
+@pytest.mark.asyncio
+async def test_call_tool_list_post_attachments_info_fail(mcp_server, mock_bridge):
+    mock_bridge.api.get_post = AsyncMock(return_value={"id": "p1", "file_ids": ["f1"]})
+    mock_bridge.api.get_file_info = AsyncMock(return_value=None)
+    result, _ = await mcp_server.mcp.call_tool("list_post_attachments", {"post_id": "p1"})
+    assert "unknown" in result[0].text
+
+@pytest.mark.asyncio
+async def test_call_tool_download_attachment_download_fail(mcp_server, mock_bridge):
+    mock_bridge.api.download_file = AsyncMock(return_value=None)
+    result, _ = await mcp_server.mcp.call_tool("download_attachment", {
+        "file_id": "f1",
+        "destination_path": "/tmp/test.png"
+    })
+    assert "Failed to download file" in result[0].text
+
+@pytest.mark.asyncio
+async def test_call_tool_download_attachment_save_fail(mcp_server, mock_bridge):
+    mock_bridge.api.download_file = AsyncMock(return_value=b"content")
+    with patch("builtins.open", side_effect=IOError("Permission denied")):
+        with patch("os.makedirs"):
+            result, _ = await mcp_server.mcp.call_tool("download_attachment", {
+                "file_id": "f1",
+                "destination_path": "/tmp/test.png"
+            })
+            assert "Error saving file" in result[0].text
+
+@pytest.mark.asyncio
+async def test_mcp_server_run(mcp_server):
+    mcp_server.mcp.run_streamable_http_async = AsyncMock()
+    await mcp_server.run("localhost", 5000)
+    assert mcp_server.mcp.settings.host == "localhost"
+    assert mcp_server.mcp.settings.port == 5000
+    mcp_server.mcp.run_streamable_http_async.assert_called_once()
+
