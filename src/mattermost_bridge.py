@@ -185,6 +185,7 @@ class MattermostBridge:
         full_response = ""
         thinking_trace = ""
         last_thinking_text = ""
+        title = ""
         last_update_time = 0
 
         # Create an initial thinking post to show immediate feedback
@@ -199,10 +200,13 @@ class MattermostBridge:
                 last_thinking_text = update["text"].strip()
             elif update["type"] == "tool":
                 thinking_trace += f"\n\n**Using tool**: `{update['name']}`\n"
+            elif update["type"] == "title":
+                title = update['title']
 
             if len(thinking_trace) > 10000:
                 thinking_trace = "... (truncated) ...\n" + thinking_trace[-8000:]
-            elif update["type"] == "content":
+            
+            if update["type"] == "content":
                 full_response = update["text"]
             elif update["type"] == "final":
                 full_response = update["text"]
@@ -224,8 +228,11 @@ class MattermostBridge:
                 if update["type"] != "final":
                     # While thinking/streaming
                     if self.config.goose_thinking_trace_simplified and last_thinking_text:
-                        # Simplified mode: Thinking... [Last action]
-                        resp_msg = full_response or f"{THINKING_MSG} *[{last_thinking_text}]*"
+                        if title:
+                            resp_msg = full_response or f"{THINKING_MSG} **{title}** *[{last_thinking_text}]*"
+                        else:
+                            # Simplified mode: Thinking... [Last action]
+                            resp_msg = full_response or f"{THINKING_MSG} *[{last_thinking_text}]*"
                     else:
                         resp_msg = full_response or THINKING_MSG
                 else:

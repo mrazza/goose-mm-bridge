@@ -309,8 +309,20 @@ class GooseACPClient:
                     if "error" in res:
                         raise Exception(f"Goose error: {res['error']}")
 
+                    result = res.get("result", {})
+                    stop_reason = result.get("stopReason")
+
                     full_response = await self._drain_remaining_chunks(
                         session_id, full_response)
+
+                    # Handle specific stop reasons to make prompt completion more robust
+                    if stop_reason == "max_turns":
+                        full_response += "\n\n⚠️ *Warning: Session reached maximum turn limit.*"
+                    elif stop_reason == "max_tokens":
+                        full_response += "\n\n⚠️ *Warning: Session reached context token limit.*"
+                    elif stop_reason == "cancelled":
+                        full_response += "\n\n🛑 *Notice: Session prompt was cancelled.*"
+
                     break
 
                 # If neither is done, check if process is still alive
@@ -364,6 +376,10 @@ class GooseACPClient:
             content_obj = update.get("content", {})
             if content_obj.get("type") == "text":
                 return {"type": "content", "text": content_obj.get("text", "")}
+        elif session_update == "agent_thought_chunk":
+            content_obj = update.get("content", {})
+            if content_obj.get("type") == "text":
+                return {"type": "thinking", "text": content_obj.get("text", "")}
         elif session_update == "agent_thinking_chunk":
             return {"type": "thinking", "text": update.get("thinking", "")}
         elif session_update == "call_tool":
@@ -394,6 +410,8 @@ class GooseACPClient:
             if session_id:
                 self.context_usage[session_id] = {"used": used, "size": size}
             return {"type": "usage", "used": used, "size": size}
+        elif session_update == "session_info_update":
+            return {"type": "title", "title": update.get("title")}
 
         if self.config.debug:
             print(f"DEBUG: Unknown or unhandled chunk format: {chunk}")
