@@ -310,7 +310,7 @@ class GooseACPClient:
                         raise Exception(f"Goose error: {res['error']}")
 
                     result = res.get("result", {})
-                    stop_reason = result.get("stopReason")
+                    stop_reason = result.get("stopReason") if isinstance(result, dict) else None
 
                     full_response = await self._drain_remaining_chunks(
                         session_id, full_response)
