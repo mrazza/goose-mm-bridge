@@ -831,6 +831,38 @@ async def test_stream_response_thinking_trace_unsimplified_and_delayed(config, m
     assert mock_api.update_post.called
 
 @pytest.mark.asyncio
+async def test_stream_response_thinking_trace_simplified_with_title(config, mock_api, mock_goose_client):
+    import time
+    bridge = MattermostBridge(api=mock_api, config=config)
+    config.goose_thinking_trace = True
+    config.goose_thinking_trace_simplified = True
+
+    async def mock_thinking_prompt_with_title(sid, msg):
+        yield {"type": "title", "title": "Executing Task"}
+        yield {"type": "thinking", "text": "thought 1"}
+        yield {"type": "content", "text": "part 1"}
+        yield {"type": "final", "text": "final ans"}
+
+    mock_goose_client.prompt.side_effect = mock_thinking_prompt_with_title
+
+    # We also mock time to trigger post update
+    time_values = [100.0, 100.0, 101.5, 102.0, 103.0]
+    with patch("time.time", side_effect=time_values):
+        await bridge._stream_response_to_mattermost(mock_goose_client, "s1", "msg", "c1", "r1")
+
+    # Verify that the post was updated with the simplified thinking trace using the title
+    assert mock_api.update_post.called
+    
+    # Check that update_post was called with the working on task format
+    found_title_working = False
+    for call in mock_api.update_post.call_args_list:
+        post_id, message = call[0]
+        if ":thinking_face: **Working on executing task...**" in message:
+            found_title_working = True
+            break
+    assert found_title_working
+
+@pytest.mark.asyncio
 async def test_stream_response_initial_post_fails(config, mock_api, mock_goose_client):
     import time
     bridge = MattermostBridge(api=mock_api, config=config)
