@@ -525,6 +525,55 @@ async def test_prompt_clears_queue_and_success_flow(client):
     assert chunks[2] == {"type": "final", "text": "hello world"}
 
 @pytest.mark.asyncio
+async def test_prompt_stop_reasons(client):
+    # Tests stopReason values: max_turns, max_tokens, cancelled
+    for stop_reason, warning_suffix in [
+        ("max_turns", "\n\n⚠️ *Warning: Session reached maximum turn limit.*"),
+        ("max_tokens", "\n\n⚠️ *Warning: Session reached context token limit.*"),
+        ("cancelled", "\n\n🛑 *Notice: Session prompt was cancelled.*")
+    ]:
+        session_id = f"s_stop_{stop_reason}"
+        client.session_queues[session_id] = asyncio.Queue()
+        
+        mock_process = MagicMock()
+        mock_process.returncode = None
+        client.process = mock_process
+        
+        prompt_res_fut = asyncio.Future()
+        
+        async def mock_send_request(*args, **kwargs):
+            return await prompt_res_fut
+            
+        client.send_request = mock_send_request
+        
+        chunks = []
+        async def run_prompt():
+            async for chunk in client.prompt(session_id, "test"):
+                chunks.append(chunk)
+                
+        prompt_task = asyncio.create_task(run_prompt())
+        await asyncio.sleep(0.01)
+        
+        # Put a final chunk
+        await client.session_queues[session_id].put({
+            "method": "session/prompt/next",
+            "params": {
+                "chunk": {
+                    "type": "text",
+                    "text": "done"
+                }
+            }
+        })
+        await asyncio.sleep(0.05)
+        
+        prompt_res_fut.set_result({"result": {"stopReason": stop_reason}})
+        await prompt_task
+        
+        assert len(chunks) == 2
+        assert chunks[0] == {"type": "content", "text": "done"}
+        assert chunks[1] == {"type": "final", "text": "done" + warning_suffix}
+
+@pytest.mark.asyncio
 async def test_prompt_result_error(client):
     # Tests line 310
     session_id = "s1"
@@ -645,6 +694,38 @@ async def test_parse_update_chunk_usage_and_debug(client):
     }
     parsed_unknown = client._parse_update_chunk(chunk_unknown)
     assert parsed_unknown is None
+
+@pytest.mark.asyncio
+async def test_parse_update_chunk_thought_and_title(client):
+    # Tests agent_thought_chunk and session_info_update
+    chunk_thought = {
+        "method": "session/update",
+        "params": {
+            "sessionId": "s1",
+            "update": {
+                "sessionUpdate": "agent_thought_chunk",
+                "content": {
+                    "type": "text",
+                    "text": "thinking hard"
+                }
+            }
+        }
+    }
+    parsed_thought = client._parse_update_chunk(chunk_thought)
+    assert parsed_thought == {"type": "thinking", "text": "thinking hard"}
+
+    chunk_title = {
+        "method": "session/update",
+        "params": {
+            "sessionId": "s1",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "title": "New Title"
+            }
+        }
+    }
+    parsed_title = client._parse_update_chunk(chunk_title)
+    assert parsed_title == {"type": "title", "title": "New Title"}
 
 @pytest.mark.asyncio
 async def test_drain_remaining_chunks_no_session(client):
