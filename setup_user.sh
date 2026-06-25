@@ -30,7 +30,7 @@ sudo chown -R "$TARGET_USER:$TARGET_USER" "/home/$TARGET_USER"
 
 # 3. Configure Sudoers
 echo "Configuring sudoers for $BRIDGE_USER to run as $TARGET_USER..."
-SUDO_LINE="$BRIDGE_USER ALL=($TARGET_USER) NOPASSWD: $GOOSE_PATH acp"
+SUDO_LINE="$BRIDGE_USER ALL=($TARGET_USER) NOPASSWD: /usr/bin/env * goose acp *"
 DEFAULTS_LINE="Defaults:$TARGET_USER runcwd=*"
 
 # Check if the line already exists to avoid duplicates

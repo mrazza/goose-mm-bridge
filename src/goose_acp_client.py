@@ -14,7 +14,11 @@ class GooseACPClient:
 
     def __init__(self, linux_user: Optional[str] = None, config=None):
         self.linux_user = linux_user
-        self.config = config or default_config
+        if linux_user and config:
+            from config import load_user_config
+            self.config = load_user_config(linux_user, config)
+        else:
+            self.config = config or default_config
         self.process = None
         self.message_id = 1
         self.pending_requests: Dict[int, asyncio.Future] = {}
@@ -66,6 +70,11 @@ class GooseACPClient:
         if self.config.goose_mistral_api_key:
             env["MISTRAL_API_KEY"] = self.config.goose_mistral_api_key
 
+        if getattr(self.config, "user_env_vars", None):
+            for k, v in self.config.user_env_vars.items():
+                if v is not None:
+                    env[k] = str(v)
+
         cmd = ["goose", "acp"]
         if self.config.goose_builtin_extensions:
             cmd.extend(["--with-builtin", ",".join(self.config.goose_builtin_extensions)])
@@ -76,11 +85,15 @@ class GooseACPClient:
                 pw = pwd.getpwnam(self.linux_user)
                 home_dir = pw.pw_dir
                 # Use /usr/bin/env to inject variables when running with sudo
+                keys_to_pass = {
+                    "GOOSE_PROVIDER", "GOOSE_MODEL", "OPENAI_API_KEY",
+                    "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY"
+                }
+                if getattr(self.config, "user_env_vars", None):
+                    keys_to_pass.update(self.config.user_env_vars.keys())
+
                 env_args = []
-                for key in [
-                        "GOOSE_PROVIDER", "GOOSE_MODEL", "OPENAI_API_KEY",
-                        "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY"
-                ]:
+                for key in sorted(keys_to_pass):
                     if key in env:
                         env_args.append(f"{key}={env[key]}")
 
