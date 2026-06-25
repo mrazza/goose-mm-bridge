@@ -257,6 +257,7 @@ async def test_get_mcp_servers(client):
     client.config.mcp_enabled = True
     client.config.mcp_host = "localhost"
     client.config.mcp_port = 5006
+    client.config.goose_mcp_servers = []
 
     # Test with HTTP support
     client.http_supported = True
@@ -805,3 +806,55 @@ async def test_start_with_linux_user_and_env(config):
             assert "GOOSE_PROVIDER=openai" in cmd
             assert "OPENAI_API_KEY=sk-test" in cmd
             assert "goose" in cmd
+
+
+@pytest.mark.asyncio
+async def test_start_with_user_overrides(config, tmp_path):
+    user_configs_dir = tmp_path / "user_configs"
+    user_configs_dir.mkdir()
+    user_file = user_configs_dir / "user1.env"
+    user_file.write_text(
+        "GOOSE_PROVIDER=google\n"
+        "GOOGLE_API_KEY=goog-key\n"
+        "CUSTOM_ENV_VAR=hello_world\n"
+    )
+    
+    config.user_configs_dir = str(user_configs_dir)
+    config.goose_provider = "openai"
+    config.goose_openai_api_key = "sk-test"
+    
+    client = GooseACPClient(linux_user="user1", config=config)
+    
+    with patch('asyncio.create_subprocess_exec', new_callable=AsyncMock) as mock_exec,\
+         patch('pwd.getpwnam') as mock_pwd:
+        
+        mock_pwd.return_value.pw_dir = "/home/user1"
+        mock_process = MagicMock()
+        mock_process.returncode = None
+        mock_exec.return_value = mock_process
+        
+        with patch.object(client, '_send_raw_request', new_callable=AsyncMock) as mock_raw:
+            mock_raw.return_value = {"result": {}}
+            await client._start()
+            
+            args, kwargs = mock_exec.call_args
+            cmd = args
+            env = kwargs.get('env', {})
+            
+            # Subprocess env should have overwritten and extra variables
+            assert env.get("GOOSE_PROVIDER") == "google"
+            assert env.get("GOOGLE_API_KEY") == "goog-key"
+            assert env.get("CUSTOM_ENV_VAR") == "hello_world"
+            
+            # The sudo command should pass overrides down
+            assert "sudo" in cmd
+            assert "user1" in cmd
+            assert "/usr/bin/env" in cmd
+            assert "GOOSE_PROVIDER=google" in cmd
+            assert "GOOGLE_API_KEY=goog-key" in cmd
+            assert "CUSTOM_ENV_VAR=hello_world" in cmd
+            
+            # Verify the default sk-test key is still in keys to pass (sorted output order)
+            assert "OPENAI_API_KEY=sk-test" in cmd
+            assert "goose" in cmd
+

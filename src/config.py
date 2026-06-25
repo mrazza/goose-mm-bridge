@@ -36,6 +36,8 @@ class Config:
     goose_mistral_api_key: Optional[str] = os.getenv("MISTRAL_API_KEY")
     goose_builtin_extensions: List[str] = None
     goose_mcp_servers: List[dict] = None
+    user_configs_dir: str = os.getenv("USER_CONFIGS_DIR", "user_configs")
+    user_env_vars: Optional[dict] = None
 
     def __post_init__(self):
         if self.approved_users is None:
@@ -73,3 +75,82 @@ class Config:
 
 # Default instance
 default_config = Config()
+
+
+def load_user_config(linux_user: str, base_config: Config) -> Config:
+    """Loads user-specific config overrides from user_configs/{linux_user}.env if it exists."""
+    import dataclasses
+    from dotenv import dotenv_values
+
+    config_path = os.path.join(base_config.user_configs_dir, f"{linux_user}.env")
+    if not os.path.exists(config_path):
+        return base_config
+
+    try:
+        user_env = dotenv_values(config_path)
+    except Exception as e:
+        print(f"[{datetime.now() if 'datetime' in globals() else os.getpid()}] Error loading user config from {config_path}: {e}")
+        return base_config
+
+    if not user_env:
+        return base_config
+
+    overrides = {}
+
+    # Helper function to convert env strings to boolean
+    def parse_bool(v: str) -> bool:
+        return v.lower() == "true"
+
+    # Helper to parse list of strings
+    def parse_list(v: str) -> List[str]:
+        return [x.strip() for x in v.split(",") if x.strip()]
+
+    # Helper to parse JSON
+    def parse_json(v: str):
+        try:
+            import json
+            return json.loads(v)
+        except Exception:
+            return []
+
+    # Map of environment variable name -> (config_field_name, conversion_fn)
+    mapping = {
+        "MATTERMOST_URL": ("mattermost_url", lambda v: v.strip().rstrip('/')),
+        "MATTERMOST_TOKEN": ("mattermost_token", str),
+        "MATTERMOST_SCHEME": ("mattermost_scheme", str),
+        "MATTERMOST_PORT": ("mattermost_port", str),
+        "APPROVED_USERS": ("approved_users", parse_list),
+        "POLL_INTERVAL": ("poll_interval", int),
+        "DEBUG": ("debug", parse_bool),
+        "GOOSE_THINKING_TRACE": ("goose_thinking_trace", parse_bool),
+        "GOOSE_THINKING_TRACE_SIMPLIFIED": ("goose_thinking_trace_simplified", parse_bool),
+        "RPC_TIMEOUT": ("rpc_timeout", int),
+        "MAX_SESSIONS": ("max_sessions", int),
+        "USER_MAPPING_FILE": ("user_mapping_file", str),
+        "REQUIRE_USER_MAPPING": ("require_user_mapping", parse_bool),
+        "MCP_HOST": ("mcp_host", str),
+        "MCP_PORT": ("mcp_port", int),
+        "MCP_ENABLED": ("mcp_enabled", parse_bool),
+        "GOOSE_PROVIDER": ("goose_provider", str),
+        "GOOSE_MODEL": ("goose_model", str),
+        "OPENAI_API_KEY": ("goose_openai_api_key", str),
+        "ANTHROPIC_API_KEY": ("goose_anthropic_api_key", str),
+        "GOOGLE_API_KEY": ("goose_google_api_key", str),
+        "MISTRAL_API_KEY": ("goose_mistral_api_key", str),
+        "GOOSE_BUILTIN_EXTENSIONS": ("goose_builtin_extensions", parse_list),
+        "GOOSE_MCP_SERVERS": ("goose_mcp_servers", parse_json),
+    }
+
+    for env_key, val in user_env.items():
+        if val is None:
+            continue
+        if env_key in mapping:
+            field_name, convert_fn = mapping[env_key]
+            try:
+                overrides[field_name] = convert_fn(val)
+            except Exception as e:
+                print(f"Error parsing user config option {env_key}: {e}")
+
+    overrides["user_env_vars"] = dict(user_env)
+    return dataclasses.replace(base_config, **overrides)
+

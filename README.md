@@ -43,6 +43,27 @@ The bridge supports user segmentation by mapping Mattermost users to dedicated L
 - **Tool Isolation**: Shell commands are executed as the mapped user.
 - **Memory/Config Isolation**: Goose configuration and history are stored in the user's home directory (`/home/username/.config/goose`).
 
+### Per-User Config Overrides
+
+The bridge allows you to override default settings (from `.env`) on a per-user basis. This lets individual Linux users have unique configurations (e.g., specific AI providers, models, custom API keys, or dedicated MCP servers).
+
+To configure overrides for a user:
+1. Create a `.env` file for the user inside the directory specified by `USER_CONFIGS_DIR` (defaults to `user_configs/`):
+   ```bash
+   mkdir -p user_configs
+   touch user_configs/goose_user_1.env
+   ```
+2. Define any settings you want to override or add for that user. For example, in `user_configs/goose_user_1.env`:
+   ```env
+   GOOSE_PROVIDER=openai
+   OPENAI_API_KEY=sk-proj-...
+   GOOSE_MODEL=gpt-4o
+   # You can also supply custom MCP servers or environment variables for tools
+   MY_CUSTOM_TOOL_API_KEY=secret_token
+   ```
+
+Any variables defined in the user's `.env` file will override the default values from the global `.env` file when running Goose as that user. Any extra custom environment variables will also be safely passed through the `sudo` security boundary.
+
 ## 🛠 Prerequisites
 
 - [Goose](https://github.com/block/goose) installed and available in your PATH.
