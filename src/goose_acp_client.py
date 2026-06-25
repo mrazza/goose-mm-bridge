@@ -95,7 +95,10 @@ class GooseACPClient:
                 env_args = []
                 for key in sorted(keys_to_pass):
                     if key in env:
-                        env_args.append(f"{key}={env[key]}")
+                        # Only pass variables that have a non-empty string value
+                        val = env[key]
+                        if val is not None and str(val).strip():
+                            env_args.append(f"{key}={val}")
 
                 cmd = ["sudo", "-n", "-u", self.linux_user, "-D", home_dir, "/usr/bin/env"] + env_args + cmd
             except KeyError:
