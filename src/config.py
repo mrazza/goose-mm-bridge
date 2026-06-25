@@ -4,7 +4,8 @@ from typing import List, Optional
 
 from dotenv import load_dotenv
 
-load_dotenv()
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(project_root, ".env"))
 
 
 @dataclass
@@ -82,7 +83,11 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
     import dataclasses
     from dotenv import dotenv_values
 
-    config_path = os.path.join(base_config.user_configs_dir, f"{linux_user}.env")
+    user_configs_dir = base_config.user_configs_dir
+    if not os.path.isabs(user_configs_dir):
+        user_configs_dir = os.path.join(project_root, user_configs_dir)
+
+    config_path = os.path.join(user_configs_dir, f"{linux_user}.env")
     if not os.path.exists(config_path):
         return base_config
 
