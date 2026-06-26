@@ -34,6 +34,7 @@ class MattermostBridge:
         self.bot_mention = None
         self.background_tasks = set()
         self.thread_counters = {}  # Track message counts per thread
+        self.impersonations = {}  # Admin impersonation state: admin_id -> {"id": target_id, "username": target_username}
 
     async def initialize(self) -> bool:
         """Initializes the bridge by connecting to Mattermost."""
@@ -81,7 +82,12 @@ class MattermostBridge:
         sender_id = post["user_id"]
         cid = post["channel_id"]
         root_id = post.get("root_id") or post["id"]
-        session_key = get_session_key(sender_id, root_id)
+        
+        eff_id = sender_id
+        if sender_id in self.impersonations:
+            eff_id = self.impersonations[sender_id]["id"]
+            
+        session_key = get_session_key(eff_id, root_id)
 
         interrupted = False
         if session_key in self.sessions:
@@ -89,9 +95,9 @@ class MattermostBridge:
                 f"[{datetime.now()}] Interruption requested for {session_key}")
             sid = self.sessions[session_key]["id"]
             user_mapping = load_user_mapping(self.config.user_mapping_file)
-            user_info = await self.api.get_user(sender_id)
+            user_info = await self.api.get_user(eff_id)
             username = user_info.get("username") if user_info else "unknown"
-            linux_user = user_mapping.get(sender_id) or user_mapping.get(
+            linux_user = user_mapping.get(eff_id) or user_mapping.get(
                 username)
 
             if linux_user and linux_user in self.goose_clients:
@@ -112,7 +118,12 @@ class MattermostBridge:
         sender_id = post["user_id"]
         cid = post["channel_id"]
         root_id = post.get("root_id") or post["id"]
-        session_key = get_session_key(sender_id, root_id)
+        
+        eff_id = sender_id
+        if sender_id in self.impersonations:
+            eff_id = self.impersonations[sender_id]["id"]
+            
+        session_key = get_session_key(eff_id, root_id)
 
         if session_key not in self.sessions:
             await self.api.create_post(
@@ -152,6 +163,91 @@ class MattermostBridge:
         msg += f"- Usage: `{percent:.1f}%`"
 
         await self.api.create_post(cid, msg, root_id=root_id)
+
+    async def _handle_impersonate_command(self, post: dict, cleaned_msg: str):
+        """Handles the !impersonate command for administrators."""
+        sender_id = post["user_id"]
+        cid = post["channel_id"]
+        root_id = post.get("root_id") or post["id"]
+
+        user_info = await self.api.get_user(sender_id)
+        username = user_info.get("username") if user_info else "unknown"
+
+        is_admin = False
+        if self.config.admin_users:
+            if sender_id in self.config.admin_users or username in self.config.admin_users:
+                is_admin = True
+
+        if not is_admin:
+            await self.api.create_post(
+                cid,
+                "⚠️ Permission denied: Only administrators can use the `!impersonate` command.",
+                root_id=root_id
+            )
+            return
+
+        parts = cleaned_msg.split(maxsplit=1)
+        if len(parts) == 1 or parts[1].strip().lower() in ["clear", "off", "stop"]:
+            if sender_id in self.impersonations:
+                old_target = self.impersonations.pop(sender_id)
+                await self.api.create_post(
+                    cid,
+                    f"👤 *Impersonation cleared. You are no longer impersonating @{old_target['username']}.*",
+                    root_id=root_id
+                )
+            else:
+                await self.api.create_post(
+                    cid,
+                    "ℹ️ *You are not currently impersonating any user.*",
+                    root_id=root_id
+                )
+            return
+
+        target = parts[1].strip().lstrip("@")
+        target_user = None
+
+        # 1. Try resolving by user ID
+        target_user = await self.api.get_user(target)
+        if not target_user:
+            # 2. Try searching by username
+            users = await self.api.search_users(target)
+            if users:
+                for u in users:
+                    if u.get("username") == target or u.get("id") == target:
+                        target_user = u
+                        break
+                if not target_user:
+                    target_user = users[0]
+
+        if not target_user:
+            await self.api.create_post(
+                cid,
+                f"⚠️ *Error: User `{target}` could not be found.*",
+                root_id=root_id
+            )
+            return
+
+        target_id = target_user["id"]
+        target_username = target_user["username"]
+
+        if target_id == self.bot_id or target_username == self.bot_username:
+            await self.api.create_post(
+                cid,
+                "⚠️ *Error: You cannot impersonate the bot itself.*",
+                root_id=root_id
+            )
+            return
+
+        self.impersonations[sender_id] = {
+            "id": target_id,
+            "username": target_username
+        }
+
+        await self.api.create_post(
+            cid,
+            f"👤 *You are now impersonating @{target_username} (`{target_id}`). All subsequent prompts will run in their context.*",
+            root_id=root_id
+        )
 
     async def _prune_sessions(self):
         """Prunes old sessions if the count exceeds MAX_SESSIONS."""
@@ -260,9 +356,9 @@ class MattermostBridge:
                                                props=props)
                 last_update_time = current_time
 
-    async def _handle_message(self, post: dict, linux_user: Optional[str], username: str):
+    async def _handle_message(self, post: dict, linux_user: Optional[str], username: str, sender_id: Optional[str] = None):
         """Handles an incoming message from Mattermost."""
-        sender_id = post["user_id"]
+        sender_id = sender_id or post["user_id"]
         message = post.get("message", "").strip()
         if not message:
             return
@@ -292,9 +388,15 @@ class MattermostBridge:
                     message = f"[Has {len(file_ids)} attachment(s)] {message}"
                 message = f"[Sender: @{username}] {message}"
 
-                print(
-                    f"[{datetime.now()}] User {username} ({sender_id}) says: {message[:100]}..."
-                )
+                real_sender_id = post["user_id"]
+                if real_sender_id != sender_id:
+                    print(
+                        f"[{datetime.now()}] Admin ({real_sender_id}) impersonating {username} ({sender_id}) says: {message[:100]}..."
+                    )
+                else:
+                    print(
+                        f"[{datetime.now()}] User {username} ({sender_id}) says: {message[:100]}..."
+                    )
 
                 is_new_session = False
                 if session_key not in self.sessions:
@@ -404,6 +506,13 @@ class MattermostBridge:
         if root_id in self.thread_counters:
             self.thread_counters[root_id] += 1
 
+        cleaned_msg = clean_message(message, self.bot_mention)
+
+        # Special Command: !impersonate
+        if cleaned_msg.lower().startswith("!impersonate"):
+            await self._handle_impersonate_command(post, cleaned_msg)
+            return
+
         # Special Command: !stop
         if message.lower() == "!stop":
             await self._handle_stop_command(post)
@@ -444,13 +553,20 @@ class MattermostBridge:
                     )
                 return
 
+        # Resolve effective sender (impersonation lookup)
+        eff_id = sender_id
+        eff_username = username
+        if sender_id in self.impersonations:
+            eff_id = self.impersonations[sender_id]["id"]
+            eff_username = self.impersonations[sender_id]["username"]
+
         # Linux User Mapping
         user_mapping = load_user_mapping(self.config.user_mapping_file)
-        linux_user = user_mapping.get(sender_id) or user_mapping.get(username)
+        linux_user = user_mapping.get(eff_id) or user_mapping.get(eff_username)
 
         if self.config.require_user_mapping and not linux_user:
             print(
-                f"[{datetime.now()}] Rejecting approved user {username}: No Linux user mapping and REQUIRE_USER_MAPPING=true"
+                f"[{datetime.now()}] Rejecting approved user {eff_username}: No Linux user mapping and REQUIRE_USER_MAPPING=true"
             )
             await self.api.create_post(
                 cid,
@@ -460,7 +576,7 @@ class MattermostBridge:
             return
 
         # Spawn task to handle message
-        task = asyncio.create_task(self._handle_message(post, linux_user, username))
+        task = asyncio.create_task(self._handle_message(post, linux_user, eff_username, sender_id=eff_id))
         self.background_tasks.add(task)
         task.add_done_callback(self.background_tasks.discard)
 
