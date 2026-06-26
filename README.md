@@ -127,6 +127,7 @@ The bridge is configured via environment variables in the `.env` file:
 | `MATTERMOST_SCHEME` | The protocol used by Mattermost (`http` or `https`). | `https` |
 | `MATTERMOST_PORT` | The port number Mattermost is listening on. | `443` |
 | `APPROVED_USERS` | A comma-separated list of usernames or user IDs authorized to use the bot. If empty, any user who can reach the bot can use it. | (None) |
+| `ADMIN_USERS` | A comma-separated list of usernames or user IDs authorized as administrators to run admin-only commands (e.g., `!impersonate`). | (None) |
 | `USER_MAPPING_FILE` | Path to the JSON configuration file for OS-level user isolation. | `user_mapping.json` |
 | `POLL_INTERVAL` | How often (in seconds) the bridge checks for new messages. | `1` |
 | `DEBUG` | Set to `true` to see detailed JSON-RPC logs for troubleshooting. | `false` |
@@ -154,6 +155,12 @@ The bridge is configured via environment variables in the `.env` file:
 The bridge supports specific commands that can be typed directly into the Mattermost chat:
 
 - **`!stop`**: Immediately cancels the active prompt in the current thread.
+- **`!impersonate <username | user_id>`**: Allows administrators (configured in `ADMIN_USERS`) to operate as other users.
+  - To impersonate: `!impersonate @username` or `!impersonate user_id`.
+  - All subsequent prompts will execute under the target user's context (including Linux user mappings, dynamic configuration overrides, and thread histories).
+  - Prompts will be automatically prepended with `[Sender: @username]` so the agent is aware of who it is interacting with.
+  - Control commands like `!stop` will route directly to the impersonated user's session.
+  - To clear impersonation: `!impersonate clear`, `!impersonate off`, or `!impersonate stop`.
 
 ## 🏃 Usage
 
