@@ -18,6 +18,11 @@ def test_config_approved_users():
         config = Config(approved_users=None)
         assert config.approved_users == ["user1", "user2"]
 
+def test_config_admin_users():
+    with patch.dict(os.environ, {"ADMIN_USERS": "admin1, admin2"}):
+        config = Config(admin_users=None)
+        assert config.admin_users == ["admin1", "admin2"]
+
 def test_config_initialization():
     config = Config(
         mattermost_url="test.com",

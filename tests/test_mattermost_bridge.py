@@ -22,6 +22,7 @@ def mock_api():
     api.update_post = AsyncMock()
     api.get_user = AsyncMock(return_value={"username": "user1"})
     api.get_thread = AsyncMock(return_value={"posts": {}})
+    api.search_users = AsyncMock(return_value=[])
     return api
 
 
@@ -949,4 +950,192 @@ async def test_run_keyboard_interrupt_termination_fails(config, mock_api, mock_g
         await bridge.run()
         
     assert mock_process.terminate.called
+
+
+@pytest.mark.asyncio
+async def test_impersonate_command_permission_denied(config, mock_api):
+    config.admin_users = ["admin1"]
+    config.approved_users = []
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.bot_id = "bot_id"
+    bridge.bot_username = "bot"
+    bridge.bot_mention = "@bot"
+    mock_api.get_user = AsyncMock(return_value={"id": "u1", "username": "user1"})
+
+    post = {
+        "id": "p1",
+        "user_id": "u1",
+        "channel_id": "c1",
+        "message": "!impersonate @someuser"
+    }
+    
+    await bridge._process_post(post, {"c1": {"type": "O"}})
+    
+    assert mock_api.create_post.called
+    args, kwargs = mock_api.create_post.call_args
+    assert "Permission denied" in args[1]
+
+
+@pytest.mark.asyncio
+async def test_impersonate_command_user_not_found(config, mock_api):
+    config.admin_users = ["admin1"]
+    config.approved_users = []
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.bot_id = "bot_id"
+    bridge.bot_username = "bot"
+    bridge.bot_mention = "@bot"
+    mock_api.get_user = AsyncMock(side_effect=lambda uid: {"id": "admin1", "username": "admin1"} if uid == "admin1" else None)
+    mock_api.search_users = AsyncMock(return_value=[])
+
+    post = {
+        "id": "p1",
+        "user_id": "admin1",
+        "channel_id": "c1",
+        "message": "!impersonate nonexistentuser"
+    }
+    
+    await bridge._process_post(post, {"c1": {"type": "O"}})
+    
+    assert mock_api.create_post.called
+    args, kwargs = mock_api.create_post.call_args
+    assert "could not be found" in args[1]
+
+
+@pytest.mark.asyncio
+async def test_impersonate_command_bot_self(config, mock_api):
+    config.admin_users = ["admin1"]
+    config.approved_users = []
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.bot_id = "bot_id"
+    bridge.bot_username = "bot"
+    bridge.bot_mention = "@bot"
+    mock_api.get_user = AsyncMock(side_effect=lambda uid: {"id": "admin1", "username": "admin1"} if uid == "admin1" else ({"id": "bot_id", "username": "bot"} if uid == "bot_id" else None))
+    mock_api.search_users = AsyncMock(return_value=[{"id": "bot_id", "username": "bot"}])
+
+    post = {
+        "id": "p1",
+        "user_id": "admin1",
+        "channel_id": "c1",
+        "message": "!impersonate bot"
+    }
+    
+    await bridge._process_post(post, {"c1": {"type": "O"}})
+    
+    assert mock_api.create_post.called
+    args, kwargs = mock_api.create_post.call_args
+    assert "cannot impersonate the bot itself" in args[1]
+
+
+@pytest.mark.asyncio
+async def test_impersonate_command_success_and_cleared(config, mock_api, mock_goose_client):
+    config.admin_users = ["admin1"]
+    config.approved_users = []
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    bridge.bot_id = "bot_id"
+    bridge.bot_username = "bot"
+    bridge.bot_mention = "@bot"
+    
+    users_db = {
+        "admin1": {"id": "admin1", "username": "admin1"},
+        "target1": {"id": "target1", "username": "target1"}
+    }
+    mock_api.get_user = AsyncMock(side_effect=lambda uid: users_db.get(uid))
+    mock_api.search_users = AsyncMock(return_value=[{"id": "target1", "username": "target1"}])
+
+    # 1. Start Impersonating
+    post = {
+        "id": "p1",
+        "user_id": "admin1",
+        "channel_id": "c1",
+        "message": "!impersonate @target1"
+    }
+    await bridge._process_post(post, {"c1": {"type": "O"}})
+    assert bridge.impersonations["admin1"] == {"id": "target1", "username": "target1"}
+    
+    assert mock_api.create_post.called
+    args, kwargs = mock_api.create_post.call_args
+    assert "now impersonating @target1" in args[1]
+
+    # 2. Subsequent prompt is handled under effective user
+    mock_api.create_post.reset_mock()
+    msg_post = {
+        "id": "p2",
+        "user_id": "admin1",
+        "channel_id": "c1",
+        "message": "@bot Hello",
+        "root_id": "root1"
+    }
+    
+    with patch('mattermost_bridge.load_user_mapping', return_value={"target1": "target_linux"}):
+        await bridge._process_post(msg_post, {"c1": {"type": "O"}})
+        await wait_for_bridge(bridge)
+        
+        # Session should be key target1:root1
+        assert "target1:root1" in bridge.sessions
+        assert bridge.sessions["target1:root1"]["linux_user"] == "target_linux"
+
+    # 3. Clear Impersonation
+    mock_api.create_post.reset_mock()
+    clear_post = {
+        "id": "p3",
+        "user_id": "admin1",
+        "channel_id": "c1",
+        "message": "!impersonate clear"
+    }
+    await bridge._process_post(clear_post, {"c1": {"type": "O"}})
+    assert "admin1" not in bridge.impersonations
+    args, kwargs = mock_api.create_post.call_args
+    assert "Impersonation cleared" in args[1]
+
+
+@pytest.mark.asyncio
+async def test_impersonate_stop_and_context(config, mock_api, mock_goose_client):
+    config.admin_users = ["admin1"]
+    mock_goose_client.cancel_prompt = AsyncMock(return_value=True)
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    bridge.bot_id = "bot_id"
+    bridge.bot_username = "bot"
+    bridge.bot_mention = "@bot"
+    
+    bridge.impersonations["admin1"] = {"id": "target1", "username": "target1"}
+    bridge.sessions["target1:root1"] = {
+        "id": "session_target",
+        "linux_user": "target_linux"
+    }
+    bridge.goose_clients["target_linux"] = mock_goose_client
+    mock_goose_client.context_usage = {"session_target": {"used": 100, "size": 1000}}
+
+    users_db = {
+        "admin1": {"id": "admin1", "username": "admin1"},
+        "target1": {"id": "target1", "username": "target1"}
+    }
+    mock_api.get_user = AsyncMock(side_effect=lambda uid: users_db.get(uid))
+
+    # Test !context under impersonation
+    context_post = {
+        "id": "p1",
+        "user_id": "admin1",
+        "channel_id": "c1",
+        "message": "!context",
+        "root_id": "root1"
+    }
+    await bridge._process_post(context_post, {"c1": {"type": "O"}})
+    assert mock_api.create_post.called
+    args, kwargs = mock_api.create_post.call_args
+    assert "10.0%" in args[1]
+
+    # Test !stop under impersonation
+    mock_api.create_post.reset_mock()
+    stop_post = {
+        "id": "p2",
+        "user_id": "admin1",
+        "channel_id": "c1",
+        "message": "!stop",
+        "root_id": "root1"
+    }
+    with patch('mattermost_bridge.load_user_mapping', return_value={"target1": "target_linux"}):
+        await bridge._process_post(stop_post, {"c1": {"type": "O"}})
+        assert mock_goose_client.cancel_prompt.called
+        assert "cancelled" in mock_api.create_post.call_args[0][1]
+
 

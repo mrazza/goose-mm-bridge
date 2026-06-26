@@ -15,6 +15,7 @@ class Config:
     mattermost_scheme: str = os.getenv("MATTERMOST_SCHEME", "https")
     mattermost_port: str = os.getenv("MATTERMOST_PORT", "443")
     approved_users: List[str] = None
+    admin_users: List[str] = None
     poll_interval: int = int(os.getenv("POLL_INTERVAL", "1"))
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
     goose_thinking_trace: bool = os.getenv("GOOSE_THINKING_TRACE",
@@ -45,6 +46,12 @@ class Config:
             self.approved_users = [
                 u.strip()
                 for u in os.getenv("APPROVED_USERS", "").split(",")
+                if u.strip()
+            ]
+        if self.admin_users is None:
+            self.admin_users = [
+                u.strip()
+                for u in os.getenv("ADMIN_USERS", "").split(",")
                 if u.strip()
             ]
         if self.goose_provider is None:
@@ -125,6 +132,7 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
         "MATTERMOST_SCHEME": ("mattermost_scheme", str),
         "MATTERMOST_PORT": ("mattermost_port", str),
         "APPROVED_USERS": ("approved_users", parse_list),
+        "ADMIN_USERS": ("admin_users", parse_list),
         "POLL_INTERVAL": ("poll_interval", int),
         "DEBUG": ("debug", parse_bool),
         "GOOSE_THINKING_TRACE": ("goose_thinking_trace", parse_bool),
