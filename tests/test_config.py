@@ -121,3 +121,61 @@ def test_load_user_config_with_file(tmp_path):
         "CUSTOM_VAR": "custom_val"
     }
 
+
+
+def test_config_hermes_env_vars():
+    env = {
+        "HERMES_PROVIDER": "openrouter",
+        "HERMES_MODEL": "nousresearch/hermes-3-llama-3.1-405b",
+        "HERMES_INFERENCE_PROVIDER": "together",
+        "HERMES_INFERENCE_MODEL": "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo",
+        "HERMES_YOLO_MODE": "true"
+    }
+    with patch.dict(os.environ, env):
+        config = Config(
+            hermes_provider=None,
+            hermes_model=None,
+            hermes_inference_provider=None,
+            hermes_inference_model=None,
+            hermes_yolo_mode=None
+        )
+        assert config.hermes_provider == "openrouter"
+        assert config.hermes_model == "nousresearch/hermes-3-llama-3.1-405b"
+        assert config.hermes_inference_provider == "together"
+        assert config.hermes_inference_model == "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo"
+        assert config.hermes_yolo_mode == "true"
+
+
+def test_config_thinking_trace_env_vars():
+    import importlib
+    import config
+    env = {
+        "THINKING_TRACE": "false",
+        "THINKING_TRACE_SIMPLIFIED": "false"
+    }
+    with patch.dict(os.environ, env):
+        importlib.reload(config)
+        cfg = config.Config()
+        assert cfg.goose_thinking_trace is False
+        assert cfg.goose_thinking_trace_simplified is False
+    importlib.reload(config)
+
+
+def test_load_user_config_with_hermes(tmp_path):
+    from config import load_user_config
+    user_dir = tmp_path / "user_configs"
+    user_dir.mkdir()
+    user_file = user_dir / "hermes_user.env"
+    user_file.write_text(
+        "HERMES_PROVIDER=openrouter\n"
+        "HERMES_MODEL=nousresearch/hermes-3-llama-3.1-405b\n"
+        "THINKING_TRACE=false\n"
+    )
+
+    config = Config()
+    config.user_configs_dir = str(user_dir)
+    loaded = load_user_config("hermes_user", config)
+
+    assert loaded.hermes_provider == "openrouter"
+    assert loaded.hermes_model == "nousresearch/hermes-3-llama-3.1-405b"
+    assert loaded.goose_thinking_trace is False
