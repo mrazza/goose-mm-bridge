@@ -40,9 +40,11 @@ class Config:
     goose_mcp_servers: List[dict] = None
     user_configs_dir: str = os.getenv("USER_CONFIGS_DIR", "user_configs")
     user_env_vars: Optional[dict] = None
-    agents_config_file: str = os.getenv("AGENTS_CONFIG_FILE", "agents_config.json")
+    agents_config_file: str = os.getenv("AGENTS_CONFIG_FILE",
+                                        "agents_config.json")
     default_agent: str = os.getenv("DEFAULT_AGENT", "goose")
-    user_agent_preferences_file: str = os.getenv("USER_AGENT_PREFERENCES_FILE", "user_agent_preferences.json")
+    user_agent_preferences_file: str = os.getenv("USER_AGENT_PREFERENCES_FILE",
+                                                 "user_agent_preferences.json")
     agents: dict = None
 
     def __post_init__(self):
@@ -96,7 +98,9 @@ class Config:
                 with open(agents_config_path, 'r') as f:
                     self.agents = json.load(f)
             except Exception as e:
-                print(f"Error loading agents config from {agents_config_path}: {e}")
+                print(
+                    f"Error loading agents config from {agents_config_path}: {e}"
+                )
 
 
 # Default instance
@@ -119,7 +123,9 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
     try:
         user_env = dotenv_values(config_path)
     except Exception as e:
-        print(f"[{datetime.now() if 'datetime' in globals() else os.getpid()}] Error loading user config from {config_path}: {e}")
+        print(
+            f"[{datetime.now() if 'datetime' in globals() else os.getpid()}] Error loading user config from {config_path}: {e}"
+        )
         return base_config
 
     if not user_env:
@@ -154,7 +160,8 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
         "POLL_INTERVAL": ("poll_interval", int),
         "DEBUG": ("debug", parse_bool),
         "GOOSE_THINKING_TRACE": ("goose_thinking_trace", parse_bool),
-        "GOOSE_THINKING_TRACE_SIMPLIFIED": ("goose_thinking_trace_simplified", parse_bool),
+        "GOOSE_THINKING_TRACE_SIMPLIFIED":
+            ("goose_thinking_trace_simplified", parse_bool),
         "RPC_TIMEOUT": ("rpc_timeout", int),
         "MAX_SESSIONS": ("max_sessions", int),
         "USER_MAPPING_FILE": ("user_mapping_file", str),
@@ -201,4 +208,3 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
         except Exception as e:
             print(f"Error loading agents config from {agents_config_path}: {e}")
     return new_config
-

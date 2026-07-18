@@ -12,7 +12,10 @@ from config import default_config
 class ACPClient:
     """Client for interacting with an ACP-compatible agent process."""
 
-    def __init__(self, linux_user: Optional[str] = None, agent_name: Optional[str] = None, config=None):
+    def __init__(self,
+                 linux_user: Optional[str] = None,
+                 agent_name: Optional[str] = None,
+                 config=None):
         self.linux_user = linux_user
         if linux_user and config:
             from config import load_user_config
@@ -45,7 +48,9 @@ class ACPClient:
                     for fut in self.pending_requests.values():
                         if not fut.done():
                             fut.set_exception(
-                                RuntimeError(f"Agent '{self.agent_name}' ACP process terminated"))
+                                RuntimeError(
+                                    f"Agent '{self.agent_name}' ACP process terminated"
+                                ))
                     self.pending_requests.clear()
                     # Clear session queues as they are tied to the old process
                     self.session_queues.clear()
@@ -55,19 +60,27 @@ class ACPClient:
 
     async def _start(self):
         """Starts the agent ACP process."""
-        print(f"[{datetime.now()}] Starting agent '{self.agent_name}' ACP process...")
+        print(
+            f"[{datetime.now()}] Starting agent '{self.agent_name}' ACP process..."
+        )
 
         agent_def = self.config.agents.get(self.agent_name)
         if not agent_def:
-            raise ValueError(f"Agent '{self.agent_name}' is not configured in agents_config.json")
+            raise ValueError(
+                f"Agent '{self.agent_name}' is not configured in agents_config.json"
+            )
 
         cmd = list(agent_def.get("command", []))
         if not cmd:
-            raise ValueError(f"No command configured for agent '{self.agent_name}'")
+            raise ValueError(
+                f"No command configured for agent '{self.agent_name}'")
 
         # Compatibility helper: if running goose, apply goose-specific flags
-        if "goose" in cmd and getattr(self.config, "goose_builtin_extensions", None):
-            cmd.extend(["--with-builtin", ",".join(self.config.goose_builtin_extensions)])
+        if "goose" in cmd and getattr(self.config, "goose_builtin_extensions",
+                                      None):
+            cmd.extend([
+                "--with-builtin", ",".join(self.config.goose_builtin_extensions)
+            ])
 
         # Construct environment for the agent process
         env = os.environ.copy()
@@ -82,7 +95,8 @@ class ACPClient:
         forward_env_keys = agent_def.get("forward_env") or []
         for key in forward_env_keys:
             val = None
-            if getattr(self.config, "user_env_vars", None) and key in self.config.user_env_vars:
+            if getattr(self.config, "user_env_vars",
+                       None) and key in self.config.user_env_vars:
                 val = self.config.user_env_vars[key]
             elif hasattr(self.config, key.lower()):
                 val = getattr(self.config, key.lower())
@@ -116,9 +130,13 @@ class ACPClient:
                         if val is not None and str(val).strip():
                             env_args.append(f"{key}={val}")
 
-                cmd = ["sudo", "-n", "-u", self.linux_user, "-D", home_dir, "/usr/bin/env"] + env_args + cmd
+                cmd = [
+                    "sudo", "-n", "-u", self.linux_user, "-D", home_dir,
+                    "/usr/bin/env"
+                ] + env_args + cmd
             except KeyError:
-                cmd = ["sudo", "-n", "-u", self.linux_user, "/usr/bin/env"] + cmd
+                cmd = ["sudo", "-n", "-u", self.linux_user, "/usr/bin/env"
+                      ] + cmd
 
         print(f"[{datetime.now()}] Process command line: {cmd}")
         self.process = await asyncio.create_subprocess_exec(
@@ -154,7 +172,9 @@ class ACPClient:
                 f"[{datetime.now()}] Agent '{self.agent_name}' ACP initialized. SSE support: {self.sse_supported}, HTTP support: {self.http_supported}"
             )
         except Exception as e:
-            print(f"[{datetime.now()}] Failed to initialize Agent '{self.agent_name}' ACP: {e}")
+            print(
+                f"[{datetime.now()}] Failed to initialize Agent '{self.agent_name}' ACP: {e}"
+            )
             if self.process:
                 try:
                     self.process.terminate()
@@ -202,7 +222,8 @@ class ACPClient:
             if not fut.done():
                 fut.set_exception(RuntimeError("Agent ACP stdout closed"))
         self.pending_requests.clear()
-        print(f"[{datetime.now()}] Agent '{self.agent_name}' ACP stdout closed.")
+        print(
+            f"[{datetime.now()}] Agent '{self.agent_name}' ACP stdout closed.")
 
     async def _read_stderr(self):
         """Reads and processes stderr from the agent ACP process."""
@@ -371,7 +392,8 @@ class ACPClient:
                         raise Exception(f"Agent error: {res['error']}")
 
                     result = res.get("result", {})
-                    stop_reason = result.get("stopReason") if isinstance(result, dict) else None
+                    stop_reason = result.get("stopReason") if isinstance(
+                        result, dict) else None
 
                     full_response = await self._drain_remaining_chunks(
                         session_id, full_response)
@@ -508,9 +530,12 @@ class ACPClient:
         servers = []
         if self.config.mcp_enabled and self.http_supported:
             servers.append({
-                "type": "http",
-                "name": "mattermost-bridge",
-                "url": f"http://{self.config.mcp_host}:{self.config.mcp_port}/mcp",
+                "type":
+                    "http",
+                "name":
+                    "mattermost-bridge",
+                "url":
+                    f"http://{self.config.mcp_host}:{self.config.mcp_port}/mcp",
                 "headers": []
             })
 
