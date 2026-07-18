@@ -1,10 +1,11 @@
 import asyncio
 from datetime import datetime
+import os
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from config import default_config
-from goose_acp_client import GooseACPClient
+from acp_client import ACPClient
 from mattermost_api import MattermostAPI
 from utils import clean_message
 from utils import get_session_key
@@ -14,15 +15,42 @@ CACHE_TTL = 60  # Update cache every 60 seconds
 THINKING_MSG = ":thinking_face: **Thinking...**"
 
 
-class MattermostBridge:
-    """Manages the connection between Mattermost and Goose."""
+class GooseClientsCompatDict(dict):
+    def __init__(self, bridge):
+        self._bridge = bridge
+        super().__init__()
 
-    def __init__(self, api=None, config=None, goose_client_factory=None):
+    def __getitem__(self, key):
+        return self._bridge.agent_clients.get((key, self._bridge.config.default_agent))
+
+    def __setitem__(self, key, value):
+        self._bridge.agent_clients[(key, self._bridge.config.default_agent)] = value
+
+    def __contains__(self, key):
+        return (key, self._bridge.config.default_agent) in self._bridge.agent_clients
+
+    def get(self, key, default=None):
+        return self._bridge.agent_clients.get((key, self._bridge.config.default_agent), default)
+
+    def values(self):
+        return self._bridge.agent_clients.values()
+
+
+class MattermostBridge:
+    """Manages the connection between Mattermost and ACP agents."""
+
+    def __init__(self, api=None, config=None, goose_client_factory=None, agent_client_factory=None):
         self.config = config or default_config
         self.api = api or MattermostAPI(config=self.config)
-        self.goose_client_factory = goose_client_factory or (
-            lambda user: GooseACPClient(user, config=self.config))
-        self.goose_clients: Dict[str, GooseACPClient] = {}
+        
+        if goose_client_factory is not None:
+            self.agent_client_factory = lambda user, agent: goose_client_factory(user)
+        else:
+            self.agent_client_factory = agent_client_factory or (
+                lambda user, agent: ACPClient(user, agent, config=self.config))
+                
+        self.agent_clients: Dict[Tuple[str, str], ACPClient] = {}
+        self.goose_clients = GooseClientsCompatDict(self)
         self.sessions = {}
         self.active_tasks = {}
         self.session_locks = {}
@@ -99,9 +127,11 @@ class MattermostBridge:
             username = user_info.get("username") if user_info else "unknown"
             linux_user = user_mapping.get(eff_id) or user_mapping.get(
                 username)
+            agent_name = self.sessions[session_key].get("agent_name") or self.config.default_agent
+            client_key = (linux_user, agent_name)
 
-            if linux_user and linux_user in self.goose_clients:
-                await self.goose_clients[linux_user].cancel_prompt(sid)
+            if client_key in self.agent_clients and sid is not None:
+                await self.agent_clients[client_key].cancel_prompt(sid)
                 interrupted = True
 
         if session_key in self.active_tasks:
@@ -135,15 +165,17 @@ class MattermostBridge:
         session_data = self.sessions[session_key]
         sid = session_data["id"]
         target_linux_user = session_data["linux_user"]
+        agent_name = session_data.get("agent_name") or self.config.default_agent
+        client_key = (target_linux_user, agent_name)
 
-        if target_linux_user not in self.goose_clients:
+        if client_key not in self.agent_clients:
             await self.api.create_post(
                 cid,
-                "⚠️ *Goose client not found for this session.*",
+                "⚠️ *Agent client not found for this session.*",
                 root_id=root_id)
             return
 
-        client = self.goose_clients[target_linux_user]
+        client = self.agent_clients[client_key]
         usage = client.context_usage.get(sid)
 
         if not usage:
@@ -249,6 +281,199 @@ class MattermostBridge:
             root_id=root_id
         )
 
+    def _get_user_default_agent(self, user_id: str) -> str:
+        """Retrieves the persistent default agent for a user."""
+        preferences_path = self.config.user_agent_preferences_file
+        if not os.path.isabs(preferences_path):
+            from config import project_root
+            preferences_path = os.path.join(project_root, preferences_path)
+            
+        if os.path.exists(preferences_path):
+            try:
+                import json
+                with open(preferences_path, 'r') as f:
+                    prefs = json.load(f)
+                    return prefs.get(user_id, self.config.default_agent)
+            except Exception as e:
+                print(f"Error loading user agent preferences: {e}")
+        return self.config.default_agent
+
+    def _set_user_default_agent(self, user_id: str, agent_name: str):
+        """Saves the persistent default agent for a user."""
+        preferences_path = self.config.user_agent_preferences_file
+        if not os.path.isabs(preferences_path):
+            from config import project_root
+            preferences_path = os.path.join(project_root, preferences_path)
+            
+        prefs = {}
+        if os.path.exists(preferences_path):
+            try:
+                import json
+                with open(preferences_path, 'r') as f:
+                    prefs = json.load(f)
+            except Exception as e:
+                print(f"Error loading user agent preferences for write: {e}")
+                
+        prefs[user_id] = agent_name
+        try:
+            import json
+            with open(preferences_path, 'w') as f:
+                json.dump(prefs, f, indent=2)
+        except Exception as e:
+            print(f"Error saving user agent preferences: {e}")
+
+    async def _handle_agents_command(self, post: dict):
+        """Handles the !agents command to list available agents."""
+        sender_id = post["user_id"]
+        cid = post["channel_id"]
+        root_id = post.get("root_id") or post["id"]
+
+        eff_id = sender_id
+        if sender_id in self.impersonations:
+            eff_id = self.impersonations[sender_id]["id"]
+
+        session_key = get_session_key(eff_id, root_id)
+        
+        if session_key in self.sessions:
+            active_agent = self.sessions[session_key].get("agent_name")
+        else:
+            active_agent = None
+
+        default_agent = self._get_user_default_agent(eff_id)
+        
+        msg = "🤖 **Available Agents**\n"
+        for name in sorted(self.config.agents.keys()):
+            status = []
+            if name == active_agent:
+                status.append("active in thread")
+            if name == default_agent:
+                status.append("your default")
+            
+            status_str = f" (*{', '.join(status)}*)" if status else ""
+            msg += f"- `{name}`{status_str}\n"
+
+        await self.api.create_post(cid, msg, root_id=root_id)
+
+    async def _handle_agent_default_command(self, post: dict, cleaned_msg: str):
+        """Handles the !agent-default <name> command to set default agent."""
+        sender_id = post["user_id"]
+        cid = post["channel_id"]
+        root_id = post.get("root_id") or post["id"]
+
+        parts = cleaned_msg.split(maxsplit=1)
+        if len(parts) < 2:
+            eff_id = sender_id
+            if sender_id in self.impersonations:
+                eff_id = self.impersonations[sender_id]["id"]
+            default_agent = self._get_user_default_agent(eff_id)
+            await self.api.create_post(
+                cid,
+                f"👤 *Your persistent default agent is `{default_agent}`.*",
+                root_id=root_id
+            )
+            return
+
+        target_agent = parts[1].strip().lower()
+        if target_agent not in self.config.agents:
+            await self.api.create_post(
+                cid,
+                f"⚠️ *Unknown agent `{target_agent}`. Use `!agents` to see available agents.*",
+                root_id=root_id
+            )
+            return
+
+        eff_id = sender_id
+        if sender_id in self.impersonations:
+            eff_id = self.impersonations[sender_id]["id"]
+
+        self._set_user_default_agent(eff_id, target_agent)
+        await self.api.create_post(
+            cid,
+            f"👤 *Persistent default agent set to `{target_agent}` for your account.*",
+            root_id=root_id
+        )
+
+    async def _handle_agent_command(self, post: dict, cleaned_msg: str):
+        """Handles the !agent <name> command to switch agents in the thread."""
+        sender_id = post["user_id"]
+        cid = post["channel_id"]
+        root_id = post.get("root_id") or post["id"]
+
+        parts = cleaned_msg.split(maxsplit=1)
+        if len(parts) < 2:
+            eff_id = sender_id
+            if sender_id in self.impersonations:
+                eff_id = self.impersonations[sender_id]["id"]
+            session_key = get_session_key(eff_id, root_id)
+            if session_key in self.sessions:
+                active_agent = self.sessions[session_key].get("agent_name")
+                await self.api.create_post(
+                    cid,
+                    f"🤖 *Active agent for this thread is `{active_agent}`.*",
+                    root_id=root_id
+                )
+            else:
+                default_agent = self._get_user_default_agent(eff_id)
+                await self.api.create_post(
+                    cid,
+                    f"🤖 *No active session for this thread. The next prompt will use your default agent `{default_agent}`.*",
+                    root_id=root_id
+                )
+            return
+
+        target_agent = parts[1].strip().lower()
+        if target_agent not in self.config.agents:
+            await self.api.create_post(
+                cid,
+                f"⚠️ *Unknown agent `{target_agent}`. Use `!agents` to see available agents.*",
+                root_id=root_id
+            )
+            return
+
+        eff_id = sender_id
+        if sender_id in self.impersonations:
+            eff_id = self.impersonations[sender_id]["id"]
+
+        session_key = get_session_key(eff_id, root_id)
+
+        # Cancel any active tasks running in this thread
+        if session_key in self.active_tasks:
+            self.active_tasks[session_key].cancel()
+
+        # If there's an existing session, we must close it first
+        if session_key in self.sessions:
+            session_data = self.sessions.pop(session_key)
+            sid = session_data["id"]
+            old_agent = session_data.get("agent_name")
+            target_linux_user = session_data["linux_user"]
+            
+            # Send session close request asynchronously to clean up
+            if (target_linux_user, old_agent) in self.agent_clients and sid is not None:
+                client = self.agent_clients[(target_linux_user, old_agent)]
+                if sid in client.session_queues:
+                    del client.session_queues[sid]
+                asyncio.create_task(
+                    client.send_request("session/close", {"sessionId": sid})
+                )
+
+        if session_key in self.session_locks:
+            del self.session_locks[session_key]
+
+        # Pre-seed the new session entry so the bridge knows which agent to spawn next
+        self.sessions[session_key] = {
+            "id": None, # will be created on the next message
+            "linux_user": None, # resolved on next message
+            "agent_name": target_agent,
+            "processed_count": 0,
+            "had_catchup_hint": False
+        }
+
+        await self.api.create_post(
+            cid,
+            f"🔄 *Switched agent for this thread to `{target_agent}`. The next message will start a fresh session.*",
+            root_id=root_id
+        )
+
     async def _prune_sessions(self):
         """Prunes old sessions if the count exceeds MAX_SESSIONS."""
         if len(self.sessions) <= self.config.max_sessions:
@@ -260,11 +485,14 @@ class MattermostBridge:
             session_data = self.sessions.pop(k)
             sid = session_data["id"]
             target_linux_user = session_data["linux_user"]
+            agent_name = session_data.get("agent_name") or self.config.default_agent
+            client_key = (target_linux_user, agent_name)
+            
             if self.config.debug:
                 print(f"DEBUG: Pruning old session for {k} ({sid})")
 
-            if target_linux_user in self.goose_clients:
-                client = self.goose_clients[target_linux_user]
+            if client_key in self.agent_clients and sid is not None:
+                client = self.agent_clients[client_key]
                 if sid in client.session_queues:
                     del client.session_queues[sid]
                 asyncio.create_task(
@@ -273,10 +501,10 @@ class MattermostBridge:
             if k in self.session_locks:
                 del self.session_locks[k]
 
-    async def _stream_response_to_mattermost(self, goose: GooseACPClient,
+    async def _stream_response_to_mattermost(self, goose: ACPClient,
                                              sid: str, msg: str,
                                              channel_id: str, root_id: str):
-        """Streams a response from Goose to Mattermost."""
+        """Streams a response from the agent to Mattermost."""
         thinking_post = None
         full_response = ""
         thinking_trace = ""
@@ -373,10 +601,20 @@ class MattermostBridge:
         if session_key not in self.session_locks:
             self.session_locks[session_key] = asyncio.Lock()
 
-        if linux_user not in self.goose_clients:
-            self.goose_clients[linux_user] = self.goose_client_factory(
-                linux_user)
-        goose = self.goose_clients[linux_user]
+        # Determine agent name
+        if session_key in self.sessions:
+            agent_name = self.sessions[session_key].get("agent_name") or self._get_user_default_agent(sender_id)
+        else:
+            agent_name = self._get_user_default_agent(sender_id)
+
+        if agent_name not in self.config.agents:
+            agent_name = self.config.default_agent
+
+        client_key = (linux_user, agent_name)
+        if client_key not in self.agent_clients:
+            self.agent_clients[client_key] = self.agent_client_factory(
+                linux_user, agent_name)
+        client = self.agent_clients[client_key]
 
         async with self.session_locks[session_key]:
             try:
@@ -399,15 +637,16 @@ class MattermostBridge:
                     )
 
                 is_new_session = False
-                if session_key not in self.sessions:
+                if session_key not in self.sessions or self.sessions[session_key].get("id") is None:
                     print(
-                        f"[{datetime.now()}] Creating new Goose session for {session_key}"
+                        f"[{datetime.now()}] Creating new Agent '{agent_name}' session for {session_key}"
                     )
 
-                    sid = await goose.create_session()
+                    sid = await client.create_session()
                     self.sessions[session_key] = {
                         "id": sid,
                         "linux_user": linux_user,
+                        "agent_name": agent_name,
                         "processed_count": 0,
                         # We mark the catchup hint to true so we clarify in a new thread whether
                         # any messages were missed.
@@ -448,21 +687,23 @@ class MattermostBridge:
 
                 try:
                     await self._stream_response_to_mattermost(
-                        goose, goose_sid, prompt_text, channel_id, root_id)
+                        client, goose_sid, prompt_text, channel_id, root_id)
                     # Update processed count to the current thread size (user messages handled)
                     session_data["processed_count"] = thread_size
                 except (ValueError, RuntimeError, asyncio.TimeoutError) as e:
                     print(
                         f"[{datetime.now()}] Session {session_key} lost, retrying once: {e}"
                     )
+                    agent_display = "Goose" if agent_name == "goose" else f"Agent '{agent_name}'"
                     await self.api.create_post(
                         channel_id,
-                        "🔄 *Notice: Connection to Goose was reset. I am starting a fresh session for this thread.*",
+                        f"🔄 *Notice: Connection to {agent_display} was reset. I am starting a fresh session for this thread.*",
                         root_id=root_id,
                     )
                     self.sessions[session_key] = {
-                        "id": await goose.create_session(),
+                        "id": await client.create_session(),
                         "linux_user": linux_user,
+                        "agent_name": agent_name,
                         "processed_count": 0,
                         "had_catchup_hint": False
                     }
@@ -470,7 +711,7 @@ class MattermostBridge:
                     # Also prepend context for the fresh retry session
                     retry_context = f"{context_msg} NOTE: The previous session for this thread terminated unexpectedly. Context from earlier in this conversation has been lost, but you can use the IDs above to try to recover history if needed."
                     await self._stream_response_to_mattermost(
-                        goose, goose_sid, f"{retry_context}\n\n{message}",
+                        client, goose_sid, f"{retry_context}\n\n{message}",
                         channel_id, root_id)
 
             except Exception as e:
@@ -521,6 +762,21 @@ class MattermostBridge:
         # Special Command: !context
         if message.lower() == "!context":
             await self._handle_context_command(post)
+            return
+
+        # Special Command: !agents
+        if cleaned_msg.strip().lower() == "!agents":
+            await self._handle_agents_command(post)
+            return
+
+        # Special Command: !agent-default
+        if cleaned_msg.lower().startswith("!agent-default"):
+            await self._handle_agent_default_command(post, cleaned_msg)
+            return
+
+        # Special Command: !agent
+        if cleaned_msg.lower().startswith("!agent"):
+            await self._handle_agent_command(post, cleaned_msg)
             return
 
         # Check if we should respond
@@ -629,8 +885,8 @@ class MattermostBridge:
                 await asyncio.gather(*self.background_tasks,
                                      return_exceptions=True)
 
-            # Close all goose clients
-            for client in self.goose_clients.values():
+            # Close all agent clients
+            for client in self.agent_clients.values():
                 if client.process and client.process.returncode is None:
                     try:
                         client.process.terminate()

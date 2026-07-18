@@ -9,16 +9,18 @@ from typing import Any, AsyncGenerator, Dict, Optional
 from config import default_config
 
 
-class GooseACPClient:
-    """Client for interacting with the Goose ACP process."""
+class ACPClient:
+    """Client for interacting with an ACP-compatible agent process."""
 
-    def __init__(self, linux_user: Optional[str] = None, config=None):
+    def __init__(self, linux_user: Optional[str] = None, agent_name: Optional[str] = None, config=None):
         self.linux_user = linux_user
         if linux_user and config:
             from config import load_user_config
             self.config = load_user_config(linux_user, config)
         else:
             self.config = config or default_config
+
+        self.agent_name = agent_name or self.config.default_agent
         self.process = None
         self.message_id = 1
         self.pending_requests: Dict[int, asyncio.Future] = {}
@@ -32,18 +34,18 @@ class GooseACPClient:
         self.context_usage: Dict[str, Dict[str, int]] = {}
 
     async def ensure_running(self):
-        """Ensures the Goose ACP process is running, restarting it if necessary."""
+        """Ensures the agent ACP process is running, restarting it if necessary."""
         async with self._start_lock:
             if self.process is None or self.process.returncode is not None or not self._healthy:
                 if self.process is not None:
                     print(
-                        f"[{datetime.now()}] Goose ACP process died (code {self.process.returncode}). Restarting..."
+                        f"[{datetime.now()}] Agent '{self.agent_name}' ACP process died (code {self.process.returncode}). Restarting..."
                     )
                     # Fail any pending requests
                     for fut in self.pending_requests.values():
                         if not fut.done():
                             fut.set_exception(
-                                RuntimeError("Goose ACP process terminated"))
+                                RuntimeError(f"Agent '{self.agent_name}' ACP process terminated"))
                     self.pending_requests.clear()
                     # Clear session queues as they are tied to the old process
                     self.session_queues.clear()
@@ -52,32 +54,49 @@ class GooseACPClient:
                 self._healthy = True
 
     async def _start(self):
-        """Starts the Goose ACP process."""
-        print(f"[{datetime.now()}] Starting Goose ACP process...")
+        """Starts the agent ACP process."""
+        print(f"[{datetime.now()}] Starting agent '{self.agent_name}' ACP process...")
 
-        # Construct environment for the Goose process
+        agent_def = self.config.agents.get(self.agent_name)
+        if not agent_def:
+            raise ValueError(f"Agent '{self.agent_name}' is not configured in agents_config.json")
+
+        cmd = list(agent_def.get("command", []))
+        if not cmd:
+            raise ValueError(f"No command configured for agent '{self.agent_name}'")
+
+        # Compatibility helper: if running goose, apply goose-specific flags
+        if "goose" in cmd and getattr(self.config, "goose_builtin_extensions", None):
+            cmd.extend(["--with-builtin", ",".join(self.config.goose_builtin_extensions)])
+
+        # Construct environment for the agent process
         env = os.environ.copy()
-        if self.config.goose_provider:
-            env["GOOSE_PROVIDER"] = self.config.goose_provider
-        if self.config.goose_model:
-            env["GOOSE_MODEL"] = self.config.goose_model
-        if self.config.goose_openai_api_key:
-            env["OPENAI_API_KEY"] = self.config.goose_openai_api_key
-        if self.config.goose_anthropic_api_key:
-            env["ANTHROPIC_API_KEY"] = self.config.goose_anthropic_api_key
-        if self.config.goose_google_api_key:
-            env["GOOGLE_API_KEY"] = self.config.goose_google_api_key
-        if self.config.goose_mistral_api_key:
-            env["MISTRAL_API_KEY"] = self.config.goose_mistral_api_key
 
+        # Apply static overrides defined in agent's config
+        static_env = agent_def.get("env") or {}
+        for k, v in static_env.items():
+            if v is not None:
+                env[k] = str(v)
+
+        # Forward keys specified in agent definition
+        forward_env_keys = agent_def.get("forward_env") or []
+        for key in forward_env_keys:
+            val = None
+            if getattr(self.config, "user_env_vars", None) and key in self.config.user_env_vars:
+                val = self.config.user_env_vars[key]
+            elif hasattr(self.config, key.lower()):
+                val = getattr(self.config, key.lower())
+            elif hasattr(self.config, f"goose_{key.lower()}"):
+                val = getattr(self.config, f"goose_{key.lower()}")
+
+            if val is not None:
+                env[key] = str(val)
+
+        # Also forward any user_env_vars from config
         if getattr(self.config, "user_env_vars", None):
             for k, v in self.config.user_env_vars.items():
                 if v is not None:
                     env[k] = str(v)
-
-        cmd = ["goose", "acp"]
-        if self.config.goose_builtin_extensions:
-            cmd.extend(["--with-builtin", ",".join(self.config.goose_builtin_extensions)])
 
         if self.linux_user:
             import pwd
@@ -85,10 +104,7 @@ class GooseACPClient:
                 pw = pwd.getpwnam(self.linux_user)
                 home_dir = pw.pw_dir
                 # Use /usr/bin/env to inject variables when running with sudo
-                keys_to_pass = {
-                    "GOOSE_PROVIDER", "GOOSE_MODEL", "OPENAI_API_KEY",
-                    "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY"
-                }
+                keys_to_pass = set(forward_env_keys) | set(static_env.keys())
                 if getattr(self.config, "user_env_vars", None):
                     keys_to_pass.update(self.config.user_env_vars.keys())
 
@@ -124,7 +140,7 @@ class GooseACPClient:
                     "protocolVersion": 0,
                     "capabilities": {},
                     "clientInfo": {
-                        "name": "goose-mm-bridge",
+                        "name": "mattermost-agent-bridge",
                         "version": "1.0.0"
                     }
                 }),
@@ -135,10 +151,10 @@ class GooseACPClient:
             self.http_supported = capabilities.get("mcpCapabilities",
                                                    {}).get("http", False)
             print(
-                f"[{datetime.now()}] Goose ACP initialized. SSE support: {self.sse_supported}, HTTP support: {self.http_supported}"
+                f"[{datetime.now()}] Agent '{self.agent_name}' ACP initialized. SSE support: {self.sse_supported}, HTTP support: {self.http_supported}"
             )
         except Exception as e:
-            print(f"[{datetime.now()}] Failed to initialize Goose ACP: {e}")
+            print(f"[{datetime.now()}] Failed to initialize Agent '{self.agent_name}' ACP: {e}")
             if self.process:
                 try:
                     self.process.terminate()
@@ -148,7 +164,7 @@ class GooseACPClient:
             raise
 
     async def _read_stdout(self):
-        """Reads and processes stdout from the Goose ACP process."""
+        """Reads and processes stdout from the agent ACP process."""
         while True:
             if self.process is None or self.process.stdout.at_eof():
                 break
@@ -162,7 +178,7 @@ class GooseACPClient:
                 if not line_str:
                     continue
                 if self.config.debug:
-                    print(f"DEBUG: GOOSE -> BRIDGE: {line_str}")
+                    print(f"DEBUG: AGENT -> BRIDGE: {line_str}")
                 res = json.loads(line_str)
                 req_id = res.get("id")
 
@@ -179,17 +195,17 @@ class GooseACPClient:
                     if session_id and session_id in self.session_queues:
                         await self.session_queues[session_id].put(res)
             except Exception as e:
-                print(f"Error parsing Goose output: {e}")
+                print(f"Error parsing agent output: {e}")
 
         # Fail any remaining pending requests
         for fut in list(self.pending_requests.values()):
             if not fut.done():
-                fut.set_exception(RuntimeError("Goose ACP stdout closed"))
+                fut.set_exception(RuntimeError("Agent ACP stdout closed"))
         self.pending_requests.clear()
-        print(f"[{datetime.now()}] Goose ACP stdout closed.")
+        print(f"[{datetime.now()}] Agent '{self.agent_name}' ACP stdout closed.")
 
     async def _read_stderr(self):
-        """Reads and processes stderr from the Goose ACP process."""
+        """Reads and processes stderr from the agent ACP process."""
         while True:
             if self.process is None or self.process.stderr.at_eof():
                 break
@@ -198,13 +214,13 @@ class GooseACPClient:
                 break
             msg = line.decode().strip()
             if msg:
-                print(f"[GOOSE-STDERR] {msg}", file=sys.stderr)
+                print(f"[AGENT-STDERR] {msg}", file=sys.stderr)
 
     async def _send_raw_request(self,
                                 method: str,
                                 params: dict = None,
                                 req_id: int = None) -> dict:
-        """Sends a JSON-RPC request to the Goose ACP process without checking health."""
+        """Sends a JSON-RPC request to the agent ACP process without checking health."""
         if req_id is None:
             req_id = self.message_id
             self.message_id += 1
@@ -230,7 +246,7 @@ class GooseACPClient:
             self.pending_requests.pop(req_id, None)
 
     async def send_notification(self, method: str, params: dict = None):
-        """Sends a JSON-RPC notification (no ID) to the Goose ACP process."""
+        """Sends a JSON-RPC notification (no ID) to the agent ACP process."""
         await self.ensure_running()
         notification = {
             "jsonrpc": "2.0",
@@ -238,7 +254,7 @@ class GooseACPClient:
             "params": params or {}
         }
         if self.config.debug:
-            print(f"DEBUG: BRIDGE -> GOOSE (NOTIF): {method}({params})")
+            print(f"DEBUG: BRIDGE -> AGENT (NOTIF): {method}({params})")
         self.process.stdin.write((json.dumps(notification) + "\n").encode())
         await self.process.stdin.drain()
 
@@ -247,10 +263,10 @@ class GooseACPClient:
                            params: dict = None,
                            timeout: Optional[int] = None,
                            req_id: int = None) -> dict:
-        """Sends a JSON-RPC request to the Goose ACP process."""
+        """Sends a JSON-RPC request to the agent ACP process."""
         await self.ensure_running()
         if self.config.debug:
-            print(f"DEBUG: BRIDGE -> GOOSE: {method}({params})")
+            print(f"DEBUG: BRIDGE -> AGENT: {method}({params})")
 
         wait_timeout = timeout if timeout is not None else self.config.rpc_timeout
         try:
@@ -269,7 +285,7 @@ class GooseACPClient:
             self._healthy = False
             if self.process and self.process.returncode is None:
                 print(
-                    f"[{datetime.now()}] Terminating unresponsive Goose ACP process..."
+                    f"[{datetime.now()}] Terminating unresponsive Agent ACP process..."
                 )
                 try:
                     self.process.terminate()
@@ -278,7 +294,7 @@ class GooseACPClient:
             raise
 
     async def create_session(self) -> str:
-        """Creates a new session in the Goose ACP."""
+        """Creates a new session in the agent ACP."""
         await self.ensure_running()
 
         params = {"cwd": os.getcwd(), "mcpServers": self._get_mcp_servers()}
@@ -352,7 +368,7 @@ class GooseACPClient:
                     # Final result received, but there might be more chunks in the queue
                     res = res_future.result()
                     if "error" in res:
-                        raise Exception(f"Goose error: {res['error']}")
+                        raise Exception(f"Agent error: {res['error']}")
 
                     result = res.get("result", {})
                     stop_reason = result.get("stopReason") if isinstance(result, dict) else None
@@ -373,7 +389,7 @@ class GooseACPClient:
                 # If neither is done, check if process is still alive
                 if self.process is None or self.process.returncode is not None:
                     raise RuntimeError(
-                        "Goose ACP process terminated during prompt")
+                        "Agent ACP process terminated during prompt")
 
                 # Check for inactivity timeout
                 if time.time() - last_activity > self.config.rpc_timeout:
@@ -383,7 +399,7 @@ class GooseACPClient:
                     self._healthy = False
                     if self.process and self.process.returncode is None:
                         print(
-                            f"[{datetime.now()}] Terminating unresponsive Goose ACP process..."
+                            f"[{datetime.now()}] Terminating unresponsive Agent ACP process..."
                         )
                         try:
                             self.process.terminate()
@@ -405,7 +421,7 @@ class GooseACPClient:
         yield {"type": "final", "text": full_response}
 
     def _parse_update_chunk(self, chunk: dict) -> Optional[dict]:
-        """Parses a chunk from the Goose ACP and returns a unified update dictionary."""
+        """Parses a chunk from the Agent ACP and returns a unified update dictionary."""
         if self.config.debug:
             print(f"DEBUG: Parsing chunk: {chunk}")
         params = chunk.get("params", {})

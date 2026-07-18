@@ -782,7 +782,7 @@ async def test_handle_context_command_no_client(config, mock_api):
     bridge.sessions["u1:r1"] = {"id": "s1", "linux_user": "l1"}
     post = {"user_id": "u1", "channel_id": "c1", "root_id": "r1", "message": "!context"}
     await bridge._handle_context_command(post)
-    assert "Goose client not found" in mock_api.create_post.call_args[0][1]
+    assert "Agent client not found" in mock_api.create_post.call_args[0][1]
 
 @pytest.mark.asyncio
 async def test_handle_context_command_no_usage(config, mock_api, mock_goose_client):
@@ -1137,5 +1137,65 @@ async def test_impersonate_stop_and_context(config, mock_api, mock_goose_client)
         await bridge._process_post(stop_post, {"c1": {"type": "O"}})
         assert mock_goose_client.cancel_prompt.called
         assert "cancelled" in mock_api.create_post.call_args[0][1]
+
+
+@pytest.mark.asyncio
+async def test_handle_agents_command(config, mock_api):
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.config.agents = {
+        "goose": {"command": ["goose", "acp"]},
+        "hermes": {"command": ["hermes", "acp"]}
+    }
+    bridge.sessions["u1:root1"] = {"id": "s1", "linux_user": "l1", "agent_name": "goose"}
+    
+    post = {"user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "!agents"}
+    await bridge._handle_agents_command(post)
+    
+    assert mock_api.create_post.called
+    msg = mock_api.create_post.call_args[0][1]
+    assert "Available Agents" in msg
+    assert "goose" in msg
+    assert "hermes" in msg
+    assert "active in thread" in msg
+
+
+@pytest.mark.asyncio
+async def test_handle_agent_command(config, mock_api, mock_goose_client):
+    bridge = MattermostBridge(api=mock_api, config=config, goose_client_factory=lambda u: mock_goose_client)
+    bridge.config.agents = {
+        "goose": {"command": ["goose", "acp"]},
+        "hermes": {"command": ["hermes", "acp"]}
+    }
+    bridge.sessions["u1:root1"] = {"id": "s1", "linux_user": "l1", "agent_name": "goose"}
+    bridge.agent_clients[("l1", "goose")] = mock_goose_client
+    
+    post = {"user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "!agent hermes"}
+    await bridge._handle_agent_command(post, "!agent hermes")
+    
+    assert mock_api.create_post.called
+    msg = mock_api.create_post.call_args[0][1]
+    assert "Switched agent" in msg
+    assert "hermes" in msg
+    assert bridge.sessions["u1:root1"]["agent_name"] == "hermes"
+    assert bridge.sessions["u1:root1"]["id"] is None
+
+
+@pytest.mark.asyncio
+async def test_handle_agent_default_command(config, mock_api, tmp_path):
+    config.user_agent_preferences_file = str(tmp_path / "user_agent_prefs.json")
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.config.agents = {
+        "goose": {"command": ["goose", "acp"]},
+        "hermes": {"command": ["hermes", "acp"]}
+    }
+    
+    post = {"user_id": "u1", "channel_id": "c1", "root_id": "root1", "message": "!agent-default hermes"}
+    await bridge._handle_agent_default_command(post, "!agent-default hermes")
+    
+    assert mock_api.create_post.called
+    msg = mock_api.create_post.call_args[0][1]
+    assert "default agent set to `hermes`" in msg
+    assert bridge._get_user_default_agent("u1") == "hermes"
+
 
 
