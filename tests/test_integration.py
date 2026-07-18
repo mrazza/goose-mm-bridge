@@ -8,7 +8,7 @@ from goose_simulator import simulate_goose_behavior
 import pytest
 
 from config import Config
-from goose_acp_client import GooseACPClient
+from acp_client import ACPClient
 from mattermost_bridge import MattermostBridge
 
 
@@ -89,7 +89,7 @@ async def test_bridge_integration_flow_with_goose_process(
     bridge = MattermostBridge(
         api=mock_api_base,
         config=base_config,
-        goose_client_factory=lambda u: GooseACPClient(u, config=base_config))
+        goose_client_factory=lambda u: ACPClient(u, config=base_config))
     bridge.last_since = 0
 
     with patch('mattermost_bridge.load_user_mapping', return_value={"user_1": "linux_alice"}), \
@@ -131,7 +131,7 @@ async def test_bridge_multi_turn_catchup_flow(base_config, mock_api_base):
     prompts_received = []
 
     def goose_factory(user):
-        client = GooseACPClient(user, config=base_config)
+        client = ACPClient(user, config=base_config)
         original_prompt = client.prompt
 
         async def tracking_prompt(sid, msg):
@@ -265,7 +265,7 @@ async def test_bridge_integration_ignore_empty_messages(base_config,
     prompts_received = []
 
     def goose_factory(user):
-        client = GooseACPClient(user, config=base_config)
+        client = ACPClient(user, config=base_config)
         original_prompt = client.prompt
 
         async def tracking_prompt(sid, msg):

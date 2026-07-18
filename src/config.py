@@ -40,6 +40,10 @@ class Config:
     goose_mcp_servers: List[dict] = None
     user_configs_dir: str = os.getenv("USER_CONFIGS_DIR", "user_configs")
     user_env_vars: Optional[dict] = None
+    agents_config_file: str = os.getenv("AGENTS_CONFIG_FILE", "agents_config.json")
+    default_agent: str = os.getenv("DEFAULT_AGENT", "goose")
+    user_agent_preferences_file: str = os.getenv("USER_AGENT_PREFERENCES_FILE", "user_agent_preferences.json")
+    agents: dict = None
 
     def __post_init__(self):
         if self.approved_users is None:
@@ -79,6 +83,20 @@ class Config:
                 self.goose_mcp_servers = json.loads(mcp_json)
             except Exception:
                 self.goose_mcp_servers = []
+
+        # Load agents config
+        agents_config_path = self.agents_config_file
+        if not os.path.isabs(agents_config_path):
+            agents_config_path = os.path.join(project_root, agents_config_path)
+
+        self.agents = {}
+        if os.path.exists(agents_config_path):
+            try:
+                import json
+                with open(agents_config_path, 'r') as f:
+                    self.agents = json.load(f)
+            except Exception as e:
+                print(f"Error loading agents config from {agents_config_path}: {e}")
 
 
 # Default instance
@@ -152,6 +170,9 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
         "MISTRAL_API_KEY": ("goose_mistral_api_key", str),
         "GOOSE_BUILTIN_EXTENSIONS": ("goose_builtin_extensions", parse_list),
         "GOOSE_MCP_SERVERS": ("goose_mcp_servers", parse_json),
+        "AGENTS_CONFIG_FILE": ("agents_config_file", str),
+        "DEFAULT_AGENT": ("default_agent", str),
+        "USER_AGENT_PREFERENCES_FILE": ("user_agent_preferences_file", str),
     }
 
     for env_key, val in user_env.items():
@@ -165,5 +186,19 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
                 print(f"Error parsing user config option {env_key}: {e}")
 
     overrides["user_env_vars"] = dict(user_env)
-    return dataclasses.replace(base_config, **overrides)
+    new_config = dataclasses.replace(base_config, **overrides)
+
+    agents_config_path = new_config.agents_config_file
+    if not os.path.isabs(agents_config_path):
+        agents_config_path = os.path.join(project_root, agents_config_path)
+
+    new_config.agents = {}
+    if os.path.exists(agents_config_path):
+        try:
+            import json
+            with open(agents_config_path, 'r') as f:
+                new_config.agents = json.load(f)
+        except Exception as e:
+            print(f"Error loading agents config from {agents_config_path}: {e}")
+    return new_config
 

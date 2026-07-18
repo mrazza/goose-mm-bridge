@@ -1,0 +1,24 @@
+{
+  "goose": {
+    "command": ["goose", "acp"],
+    "forward_env": [
+      "GOOSE_PROVIDER",
+      "GOOSE_MODEL",
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "GOOGLE_API_KEY",
+      "MISTRAL_API_KEY"
+    ]
+  },
+  "hermes": {
+    "command": ["hermes", "acp"],
+    "forward_env": [
+      "HERMES_PROVIDER",
+      "HERMES_MODEL",
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "GOOGLE_API_KEY",
+      "MISTRAL_API_KEY"
+    ]
+  }
+}
