@@ -16,21 +16,26 @@ THINKING_MSG = ":thinking_face: **Thinking...**"
 
 
 class GooseClientsCompatDict(dict):
+
     def __init__(self, bridge):
         self._bridge = bridge
         super().__init__()
 
     def __getitem__(self, key):
-        return self._bridge.agent_clients.get((key, self._bridge.config.default_agent))
+        return self._bridge.agent_clients.get(
+            (key, self._bridge.config.default_agent))
 
     def __setitem__(self, key, value):
-        self._bridge.agent_clients[(key, self._bridge.config.default_agent)] = value
+        self._bridge.agent_clients[(key,
+                                    self._bridge.config.default_agent)] = value
 
     def __contains__(self, key):
-        return (key, self._bridge.config.default_agent) in self._bridge.agent_clients
+        return (key,
+                self._bridge.config.default_agent) in self._bridge.agent_clients
 
     def get(self, key, default=None):
-        return self._bridge.agent_clients.get((key, self._bridge.config.default_agent), default)
+        return self._bridge.agent_clients.get(
+            (key, self._bridge.config.default_agent), default)
 
     def values(self):
         return self._bridge.agent_clients.values()
@@ -39,16 +44,21 @@ class GooseClientsCompatDict(dict):
 class MattermostBridge:
     """Manages the connection between Mattermost and ACP agents."""
 
-    def __init__(self, api=None, config=None, goose_client_factory=None, agent_client_factory=None):
+    def __init__(self,
+                 api=None,
+                 config=None,
+                 goose_client_factory=None,
+                 agent_client_factory=None):
         self.config = config or default_config
         self.api = api or MattermostAPI(config=self.config)
-        
+
         if goose_client_factory is not None:
-            self.agent_client_factory = lambda user, agent: goose_client_factory(user)
+            self.agent_client_factory = lambda user, agent: goose_client_factory(
+                user)
         else:
             self.agent_client_factory = agent_client_factory or (
                 lambda user, agent: ACPClient(user, agent, config=self.config))
-                
+
         self.agent_clients: Dict[Tuple[str, str], ACPClient] = {}
         self.goose_clients = GooseClientsCompatDict(self)
         self.sessions = {}
@@ -62,7 +72,8 @@ class MattermostBridge:
         self.bot_mention = None
         self.background_tasks = set()
         self.thread_counters = {}  # Track message counts per thread
-        self.impersonations = {}  # Admin impersonation state: admin_id -> {"id": target_id, "username": target_username}
+        self.impersonations = {
+        }  # Admin impersonation state: admin_id -> {"id": target_id, "username": target_username}
 
     async def initialize(self) -> bool:
         """Initializes the bridge by connecting to Mattermost."""
@@ -110,11 +121,11 @@ class MattermostBridge:
         sender_id = post["user_id"]
         cid = post["channel_id"]
         root_id = post.get("root_id") or post["id"]
-        
+
         eff_id = sender_id
         if sender_id in self.impersonations:
             eff_id = self.impersonations[sender_id]["id"]
-            
+
         session_key = get_session_key(eff_id, root_id)
 
         interrupted = False
@@ -125,9 +136,9 @@ class MattermostBridge:
             user_mapping = load_user_mapping(self.config.user_mapping_file)
             user_info = await self.api.get_user(eff_id)
             username = user_info.get("username") if user_info else "unknown"
-            linux_user = user_mapping.get(eff_id) or user_mapping.get(
-                username)
-            agent_name = self.sessions[session_key].get("agent_name") or self.config.default_agent
+            linux_user = user_mapping.get(eff_id) or user_mapping.get(username)
+            agent_name = self.sessions[session_key].get(
+                "agent_name") or self.config.default_agent
             client_key = (linux_user, agent_name)
 
             if client_key in self.agent_clients and sid is not None:
@@ -148,18 +159,16 @@ class MattermostBridge:
         sender_id = post["user_id"]
         cid = post["channel_id"]
         root_id = post.get("root_id") or post["id"]
-        
+
         eff_id = sender_id
         if sender_id in self.impersonations:
             eff_id = self.impersonations[sender_id]["id"]
-            
+
         session_key = get_session_key(eff_id, root_id)
 
         if session_key not in self.sessions:
             await self.api.create_post(
-                cid,
-                "ℹ️ *No active session for this thread.*",
-                root_id=root_id)
+                cid, "ℹ️ *No active session for this thread.*", root_id=root_id)
             return
 
         session_data = self.sessions[session_key]
@@ -214,25 +223,24 @@ class MattermostBridge:
             await self.api.create_post(
                 cid,
                 "⚠️ Permission denied: Only administrators can use the `!impersonate` command.",
-                root_id=root_id
-            )
+                root_id=root_id)
             return
 
         parts = cleaned_msg.split(maxsplit=1)
-        if len(parts) == 1 or parts[1].strip().lower() in ["clear", "off", "stop"]:
+        if len(parts) == 1 or parts[1].strip().lower() in [
+                "clear", "off", "stop"
+        ]:
             if sender_id in self.impersonations:
                 old_target = self.impersonations.pop(sender_id)
                 await self.api.create_post(
                     cid,
                     f"👤 *Impersonation cleared. You are no longer impersonating @{old_target['username']}.*",
-                    root_id=root_id
-                )
+                    root_id=root_id)
             else:
                 await self.api.create_post(
                     cid,
                     "ℹ️ *You are not currently impersonating any user.*",
-                    root_id=root_id
-                )
+                    root_id=root_id)
             return
 
         target = parts[1].strip().lstrip("@")
@@ -255,8 +263,7 @@ class MattermostBridge:
             await self.api.create_post(
                 cid,
                 f"⚠️ *Error: User `{target}` could not be found.*",
-                root_id=root_id
-            )
+                root_id=root_id)
             return
 
         target_id = target_user["id"]
@@ -266,8 +273,7 @@ class MattermostBridge:
             await self.api.create_post(
                 cid,
                 "⚠️ *Error: You cannot impersonate the bot itself.*",
-                root_id=root_id
-            )
+                root_id=root_id)
             return
 
         self.impersonations[sender_id] = {
@@ -278,8 +284,7 @@ class MattermostBridge:
         await self.api.create_post(
             cid,
             f"👤 *You are now impersonating @{target_username} (`{target_id}`). All subsequent prompts will run in their context.*",
-            root_id=root_id
-        )
+            root_id=root_id)
 
     def _get_user_default_agent(self, user_id: str) -> str:
         """Retrieves the persistent default agent for a user."""
@@ -287,7 +292,7 @@ class MattermostBridge:
         if not os.path.isabs(preferences_path):
             from config import project_root
             preferences_path = os.path.join(project_root, preferences_path)
-            
+
         if os.path.exists(preferences_path):
             try:
                 import json
@@ -304,7 +309,7 @@ class MattermostBridge:
         if not os.path.isabs(preferences_path):
             from config import project_root
             preferences_path = os.path.join(project_root, preferences_path)
-            
+
         prefs = {}
         if os.path.exists(preferences_path):
             try:
@@ -313,7 +318,7 @@ class MattermostBridge:
                     prefs = json.load(f)
             except Exception as e:
                 print(f"Error loading user agent preferences for write: {e}")
-                
+
         prefs[user_id] = agent_name
         try:
             import json
@@ -333,14 +338,14 @@ class MattermostBridge:
             eff_id = self.impersonations[sender_id]["id"]
 
         session_key = get_session_key(eff_id, root_id)
-        
+
         if session_key in self.sessions:
             active_agent = self.sessions[session_key].get("agent_name")
         else:
             active_agent = None
 
         default_agent = self._get_user_default_agent(eff_id)
-        
+
         msg = "🤖 **Available Agents**\n"
         for name in sorted(self.config.agents.keys()):
             status = []
@@ -348,7 +353,7 @@ class MattermostBridge:
                 status.append("active in thread")
             if name == default_agent:
                 status.append("your default")
-            
+
             status_str = f" (*{', '.join(status)}*)" if status else ""
             msg += f"- `{name}`{status_str}\n"
 
@@ -369,8 +374,7 @@ class MattermostBridge:
             await self.api.create_post(
                 cid,
                 f"👤 *Your persistent default agent is `{default_agent}`.*",
-                root_id=root_id
-            )
+                root_id=root_id)
             return
 
         target_agent = parts[1].strip().lower()
@@ -378,8 +382,7 @@ class MattermostBridge:
             await self.api.create_post(
                 cid,
                 f"⚠️ *Unknown agent `{target_agent}`. Use `!agents` to see available agents.*",
-                root_id=root_id
-            )
+                root_id=root_id)
             return
 
         eff_id = sender_id
@@ -390,8 +393,7 @@ class MattermostBridge:
         await self.api.create_post(
             cid,
             f"👤 *Persistent default agent set to `{target_agent}` for your account.*",
-            root_id=root_id
-        )
+            root_id=root_id)
 
     async def _handle_agent_command(self, post: dict, cleaned_msg: str):
         """Handles the !agent <name> command to switch agents in the thread."""
@@ -410,15 +412,13 @@ class MattermostBridge:
                 await self.api.create_post(
                     cid,
                     f"🤖 *Active agent for this thread is `{active_agent}`.*",
-                    root_id=root_id
-                )
+                    root_id=root_id)
             else:
                 default_agent = self._get_user_default_agent(eff_id)
                 await self.api.create_post(
                     cid,
                     f"🤖 *No active session for this thread. The next prompt will use your default agent `{default_agent}`.*",
-                    root_id=root_id
-                )
+                    root_id=root_id)
             return
 
         target_agent = parts[1].strip().lower()
@@ -426,8 +426,7 @@ class MattermostBridge:
             await self.api.create_post(
                 cid,
                 f"⚠️ *Unknown agent `{target_agent}`. Use `!agents` to see available agents.*",
-                root_id=root_id
-            )
+                root_id=root_id)
             return
 
         eff_id = sender_id
@@ -446,23 +445,23 @@ class MattermostBridge:
             sid = session_data["id"]
             old_agent = session_data.get("agent_name")
             target_linux_user = session_data["linux_user"]
-            
+
             # Send session close request asynchronously to clean up
-            if (target_linux_user, old_agent) in self.agent_clients and sid is not None:
+            if (target_linux_user,
+                    old_agent) in self.agent_clients and sid is not None:
                 client = self.agent_clients[(target_linux_user, old_agent)]
                 if sid in client.session_queues:
                     del client.session_queues[sid]
                 asyncio.create_task(
-                    client.send_request("session/close", {"sessionId": sid})
-                )
+                    client.send_request("session/close", {"sessionId": sid}))
 
         if session_key in self.session_locks:
             del self.session_locks[session_key]
 
         # Pre-seed the new session entry so the bridge knows which agent to spawn next
         self.sessions[session_key] = {
-            "id": None, # will be created on the next message
-            "linux_user": None, # resolved on next message
+            "id": None,  # will be created on the next message
+            "linux_user": None,  # resolved on next message
             "agent_name": target_agent,
             "processed_count": 0,
             "had_catchup_hint": False
@@ -471,8 +470,7 @@ class MattermostBridge:
         await self.api.create_post(
             cid,
             f"🔄 *Switched agent for this thread to `{target_agent}`. The next message will start a fresh session.*",
-            root_id=root_id
-        )
+            root_id=root_id)
 
     async def _prune_sessions(self):
         """Prunes old sessions if the count exceeds MAX_SESSIONS."""
@@ -485,9 +483,10 @@ class MattermostBridge:
             session_data = self.sessions.pop(k)
             sid = session_data["id"]
             target_linux_user = session_data["linux_user"]
-            agent_name = session_data.get("agent_name") or self.config.default_agent
+            agent_name = session_data.get(
+                "agent_name") or self.config.default_agent
             client_key = (target_linux_user, agent_name)
-            
+
             if self.config.debug:
                 print(f"DEBUG: Pruning old session for {k} ({sid})")
 
@@ -501,9 +500,9 @@ class MattermostBridge:
             if k in self.session_locks:
                 del self.session_locks[k]
 
-    async def _stream_response_to_mattermost(self, goose: ACPClient,
-                                             sid: str, msg: str,
-                                             channel_id: str, root_id: str):
+    async def _stream_response_to_mattermost(self, goose: ACPClient, sid: str,
+                                             msg: str, channel_id: str,
+                                             root_id: str):
         """Streams a response from the agent to Mattermost."""
         thinking_post = None
         full_response = ""
@@ -529,7 +528,7 @@ class MattermostBridge:
 
             if len(thinking_trace) > 10000:
                 thinking_trace = "... (truncated) ...\n" + thinking_trace[-8000:]
-            
+
             if update["type"] == "content":
                 full_response = update["text"]
             elif update["type"] == "final":
@@ -584,7 +583,11 @@ class MattermostBridge:
                                                props=props)
                 last_update_time = current_time
 
-    async def _handle_message(self, post: dict, linux_user: Optional[str], username: str, sender_id: Optional[str] = None):
+    async def _handle_message(self,
+                              post: dict,
+                              linux_user: Optional[str],
+                              username: str,
+                              sender_id: Optional[str] = None):
         """Handles an incoming message from Mattermost."""
         sender_id = sender_id or post["user_id"]
         message = post.get("message", "").strip()
@@ -603,7 +606,8 @@ class MattermostBridge:
 
         # Determine agent name
         if session_key in self.sessions:
-            agent_name = self.sessions[session_key].get("agent_name") or self._get_user_default_agent(sender_id)
+            agent_name = self.sessions[session_key].get(
+                "agent_name") or self._get_user_default_agent(sender_id)
         else:
             agent_name = self._get_user_default_agent(sender_id)
 
@@ -637,7 +641,8 @@ class MattermostBridge:
                     )
 
                 is_new_session = False
-                if session_key not in self.sessions or self.sessions[session_key].get("id") is None:
+                if session_key not in self.sessions or self.sessions[
+                        session_key].get("id") is None:
                     print(
                         f"[{datetime.now()}] Creating new Agent '{agent_name}' session for {session_key}"
                     )
@@ -832,7 +837,11 @@ class MattermostBridge:
             return
 
         # Spawn task to handle message
-        task = asyncio.create_task(self._handle_message(post, linux_user, eff_username, sender_id=eff_id))
+        task = asyncio.create_task(
+            self._handle_message(post,
+                                 linux_user,
+                                 eff_username,
+                                 sender_id=eff_id))
         self.background_tasks.add(task)
         task.add_done_callback(self.background_tasks.discard)
 
