@@ -8,25 +8,26 @@ A bridge that connects [Goose](https://github.com/block/goose) to [Mattermost](h
 
 ## 🚀 Features
 
-- **Seamless Integration**: Chat with Goose as if it were another user on Mattermost.
+- **Seamless Integration**: Chat with Goose or Hermes as if they were another user on Mattermost.
 - **Session Management**: Maintains conversation context using Mattermost threads.
 - **Multi-user Support**: Multiple users can interact with the bot simultaneously in their own sessions.
+- **Multi-agent Support**: Dynamically switch between agents (such as Goose and Hermes) per user or per thread.
 - **OS-Native Isolation**: Map Mattermost users to dedicated Linux accounts for strict security and tool isolation.
-- **MCP Tooling**: Automatically exposes Mattermost capabilities to Goose via the Model Context Protocol (MCP), allowing it to search history, find users, and send messages across channels.
+- **MCP Tooling**: Automatically exposes Mattermost capabilities to agents via the Model Context Protocol (MCP), allowing them to search history, find users, and send messages across channels.
 - **Thinking Transparency**: Stream the agent's thinking process to Mattermost as message attachments.
 - **Interactive Commands**: Use commands like `!stop` to interrupt the agent mid-response.
 
 ## 🏗 How it Works
 
 1. **Mattermost Polling**: The bridge periodically polls the Mattermost API for new posts in channels the bot has joined.
-2. **Session Mapping**: It tracks conversations by mapping the Mattermost `user_id` and `root_id` (thread ID) to a specific Goose ACP session.
-3. **Goose ACP Subprocess**: The bridge spawns `goose acp` as a subprocess and communicates via JSON-RPC.
-4. **Internal MCP Server**: The bridge runs an internal FastMCP server that Goose connects to, providing tools for Mattermost interaction.
-5. **Asynchronous Handling**: Uses `asyncio` to handle concurrent messages and streaming responses from Goose.
+2. **Session Mapping**: It tracks conversations by mapping the Mattermost `user_id` and `root_id` (thread ID) to a specific agent's ACP session.
+3. **Agent ACP Subprocess**: The bridge spawns the selected agent (e.g., `goose acp` or `hermes acp`) as a subprocess and communicates via JSON-RPC.
+4. **Internal MCP Server**: The bridge runs an internal FastMCP server that the agent connects to, providing tools for Mattermost interaction.
+5. **Asynchronous Handling**: Uses `asyncio` to handle concurrent messages and streaming responses from the agent.
 
-## 🛠 MCP Tools for Goose
+## 🛠 MCP Tools for Agents (Goose & Hermes)
 
-When interacting with Goose, it has access to the following Mattermost tools:
+When interacting with the agent (whether running Goose or Hermes), it has access to the following Mattermost tools:
 - `send_message`: Send messages to any channel or thread.
 - `get_channels`: List available channels.
 - `get_thread_context`: Fetch full history of a thread with user attribution.
@@ -62,11 +63,29 @@ To configure overrides for a user:
    MY_CUSTOM_TOOL_API_KEY=secret_token
    ```
 
-Any variables defined in the user's `.env` file will override the default values from the global `.env` file when running Goose as that user. Any extra custom environment variables will also be safely passed through the `sudo` security boundary.
+Any variables defined in the user's `.env` file will override the default values from the global `.env` file when running the agent as that user. Any extra custom environment variables will also be safely passed through the `sudo` security boundary.
+
+#### Configuring Hermes and Specialized Extension Kits
+
+Hermes supports a broad set of specialized developer toolkits (extension kits). You can customize Hermes behavior and set strict security boundaries on a per-user basis inside `user_configs/<username>.env` by toggling specific environment variables. For example, in `user_configs/hermes_user_1.env`:
+
+```env
+# Switch to the Hermes agent
+HERMES_PROVIDER=openrouter
+HERMES_MODEL=nousresearch/hermes-3-llama-3.1-405b
+OPENROUTER_API_KEY=sk-or-v1-...
+
+# Optional: Run in YOLO (non-interactive autonomous) mode
+HERMES_YOLO_MODE=true
+
+# Configure specific tools and credentials for Hermes extension kits
+GITHUB_TOKEN=ghp_...
+AMAZON_AWS_ACCESS_KEY_ID=...
+```
 
 ## 🛠 Prerequisites
 
-- [Goose](https://github.com/block/goose) installed and available in your PATH.
+- [Goose](https://github.com/block/goose) and/or [Hermes](https://github.com/NousResearch/Hermes) installed and available in your PATH.
 - A Mattermost Bot account and Personal Access Token.
 - Python 3.8+
 - (Optional) `sudo` access on the host for OS-native isolation.
@@ -147,6 +166,16 @@ The bridge is configured via environment variables in the `.env` file:
 | `MISTRAL_API_KEY` | Mistral API Key injected into the Goose subprocess. Overrides global keys. | (None) |
 | `GOOSE_BUILTIN_EXTENSIONS` | Comma-separated list of built-in Goose extension toolkits to load (e.g., `developer,memory`). | (None) |
 | `GOOSE_MCP_SERVERS` | A single-line JSON array of Model Context Protocol server configuration objects to register with Goose. | `[]` |
+| `DEFAULT_AGENT` | The default agent executable to start if none is specified by thread or user preferences (e.g. `goose`, `hermes`). | `goose` |
+| `HERMES_PROVIDER` | The LLM provider configured inside the Hermes process (e.g., `openai`, `anthropic`, `google`, `mistral`, `openrouter`, `deepseek`, `xai`, `gemini`). | (None) |
+| `HERMES_MODEL` | The specific model identifier Hermes will execute (e.g., `nousresearch/hermes-3-llama-3.1-405b`, `deepseek-chat`). | (None) |
+| `HERMES_INFERENCE_PROVIDER` | Optional override for the Hermes inference endpoint provider. | (None) |
+| `HERMES_INFERENCE_MODEL` | Optional override for the Hermes inference model. | (None) |
+| `HERMES_YOLO_MODE` | When set to `true`, enables non-interactive, autonomous execution mode for Hermes. | `false` |
+| `OPENROUTER_API_KEY` | OpenRouter API Key injected into the Hermes subprocess. | (None) |
+| `DEEPSEEK_API_KEY` | DeepSeek API Key injected into the Hermes subprocess. | (None) |
+| `XAI_API_KEY` | xAI API Key injected into the Hermes subprocess. | (None) |
+| `GEMINI_API_KEY` | Gemini API Key injected into the Hermes subprocess. | (None) |
 
 > **💡 Note on Threading**: The bridge uses Mattermost thread IDs (`root_id`) to isolate conversations. This allows you to have multiple, independent discussions with the bot simultaneously—even within the same channel. Mentioning the bot in a reply will continue that specific conversation thread.
 
@@ -155,6 +184,9 @@ The bridge is configured via environment variables in the `.env` file:
 The bridge supports specific commands that can be typed directly into the Mattermost chat:
 
 - **`!stop`**: Immediately cancels the active prompt in the current thread.
+- **`!agents`**: Lists all available configured agents (e.g., `goose`, `hermes`), indicating which one is active in the current thread and which one is your persistent default.
+- **`!agent <name>`**: Switches the agent used for the current conversation thread to `<name>`. If `<name>` is omitted, shows the active agent for the current thread.
+- **`!agent-default <name>`**: Sets `<name>` as your persistent default agent for all new threads. If `<name>` is omitted, shows your current default agent.
 - **`!impersonate <username | user_id>`**: Allows administrators (configured in `ADMIN_USERS`) to operate as other users.
   - To impersonate: `!impersonate @username` or `!impersonate user_id`.
   - All subsequent prompts will execute under the target user's context (including Linux user mappings, dynamic configuration overrides, and thread histories).
@@ -171,7 +203,7 @@ source venv/bin/activate
 python src/bridge.py
 ```
 
-The bot will start polling Mattermost for new messages and respond using the Goose ACP.
+The bot will start polling Mattermost for new messages and respond using the selected agent's ACP process.
 
 ---
 *Built with ❤️ for the Goose community.*

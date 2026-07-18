@@ -18,10 +18,8 @@ class Config:
     admin_users: List[str] = None
     poll_interval: int = int(os.getenv("POLL_INTERVAL", "1"))
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
-    goose_thinking_trace: bool = os.getenv("GOOSE_THINKING_TRACE",
-                                           "true").lower() == "true"
-    goose_thinking_trace_simplified: bool = os.getenv(
-        "GOOSE_THINKING_TRACE_SIMPLIFIED", "true").lower() == "true"
+    goose_thinking_trace: bool = (os.getenv("THINKING_TRACE") or os.getenv("GOOSE_THINKING_TRACE", "true")).lower() == "true"
+    goose_thinking_trace_simplified: bool = (os.getenv("THINKING_TRACE_SIMPLIFIED") or os.getenv("GOOSE_THINKING_TRACE_SIMPLIFIED", "true")).lower() == "true"
     rpc_timeout: int = int(os.getenv("RPC_TIMEOUT", "600"))
     max_sessions: int = int(os.getenv("MAX_SESSIONS", "100"))
     user_mapping_file: str = os.getenv("USER_MAPPING_FILE", "user_mapping.json")
@@ -36,6 +34,11 @@ class Config:
     goose_anthropic_api_key: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
     goose_google_api_key: Optional[str] = os.getenv("GOOGLE_API_KEY")
     goose_mistral_api_key: Optional[str] = os.getenv("MISTRAL_API_KEY")
+    hermes_provider: Optional[str] = os.getenv("HERMES_PROVIDER")
+    hermes_model: Optional[str] = os.getenv("HERMES_MODEL")
+    hermes_inference_provider: Optional[str] = os.getenv("HERMES_INFERENCE_PROVIDER")
+    hermes_inference_model: Optional[str] = os.getenv("HERMES_INFERENCE_MODEL")
+    hermes_yolo_mode: Optional[str] = os.getenv("HERMES_YOLO_MODE")
     goose_builtin_extensions: List[str] = None
     goose_mcp_servers: List[dict] = None
     user_configs_dir: str = os.getenv("USER_CONFIGS_DIR", "user_configs")
@@ -72,6 +75,16 @@ class Config:
             self.goose_google_api_key = os.getenv("GOOGLE_API_KEY")
         if self.goose_mistral_api_key is None:
             self.goose_mistral_api_key = os.getenv("MISTRAL_API_KEY")
+        if getattr(self, "hermes_provider", None) is None:
+            self.hermes_provider = os.getenv("HERMES_PROVIDER")
+        if getattr(self, "hermes_model", None) is None:
+            self.hermes_model = os.getenv("HERMES_MODEL")
+        if getattr(self, "hermes_inference_provider", None) is None:
+            self.hermes_inference_provider = os.getenv("HERMES_INFERENCE_PROVIDER")
+        if getattr(self, "hermes_inference_model", None) is None:
+            self.hermes_inference_model = os.getenv("HERMES_INFERENCE_MODEL")
+        if getattr(self, "hermes_yolo_mode", None) is None:
+            self.hermes_yolo_mode = os.getenv("HERMES_YOLO_MODE")
         if self.goose_builtin_extensions is None:
             self.goose_builtin_extensions = [
                 e.strip()
@@ -162,6 +175,8 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
         "GOOSE_THINKING_TRACE": ("goose_thinking_trace", parse_bool),
         "GOOSE_THINKING_TRACE_SIMPLIFIED":
             ("goose_thinking_trace_simplified", parse_bool),
+        "THINKING_TRACE": ("goose_thinking_trace", parse_bool),
+        "THINKING_TRACE_SIMPLIFIED": ("goose_thinking_trace_simplified", parse_bool),
         "RPC_TIMEOUT": ("rpc_timeout", int),
         "MAX_SESSIONS": ("max_sessions", int),
         "USER_MAPPING_FILE": ("user_mapping_file", str),
@@ -175,6 +190,11 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
         "ANTHROPIC_API_KEY": ("goose_anthropic_api_key", str),
         "GOOGLE_API_KEY": ("goose_google_api_key", str),
         "MISTRAL_API_KEY": ("goose_mistral_api_key", str),
+        "HERMES_PROVIDER": ("hermes_provider", str),
+        "HERMES_MODEL": ("hermes_model", str),
+        "HERMES_INFERENCE_PROVIDER": ("hermes_inference_provider", str),
+        "HERMES_INFERENCE_MODEL": ("hermes_inference_model", str),
+        "HERMES_YOLO_MODE": ("hermes_yolo_mode", str),
         "GOOSE_BUILTIN_EXTENSIONS": ("goose_builtin_extensions", parse_list),
         "GOOSE_MCP_SERVERS": ("goose_mcp_servers", parse_json),
         "AGENTS_CONFIG_FILE": ("agents_config_file", str),
