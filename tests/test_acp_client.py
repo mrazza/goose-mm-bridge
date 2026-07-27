@@ -757,3 +757,28 @@ async def test_start_with_user_overrides(config, tmp_path):
             # Verify the default sk-test key is still in keys to pass (sorted output order)
             assert "OPENAI_API_KEY=sk-test" in cmd
             assert "goose" in cmd
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_capabilities,expected_sse,expected_http", [
+    ({"mcpCapabilities": {"sse": True, "http": True}}, True, True),
+    ({"mcpCapabilities": None}, False, False),
+    ({}, False, False),
+    (None, False, False),
+    ({"mcpCapabilities": "invalid"}, False, False),
+])
+async def test_initialization_mcp_capabilities(client, agent_capabilities, expected_sse, expected_http):
+    mock_process = MagicMock()
+    mock_process.returncode = None
+
+    result_payload = {}
+    if agent_capabilities is not None:
+        result_payload["agentCapabilities"] = agent_capabilities
+
+    with patch('asyncio.create_subprocess_exec', new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = mock_process
+        with patch.object(client, '_send_raw_request', new_callable=AsyncMock) as mock_raw:
+            mock_raw.return_value = {"result": result_payload}
+            await client._start()
+            assert client.sse_supported is expected_sse
+            assert client.http_supported is expected_http

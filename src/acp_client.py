@@ -163,11 +163,14 @@ class ACPClient:
                     }
                 }),
                                          timeout=self.config.rpc_timeout)
-            capabilities = res.get("result", {}).get("agentCapabilities", {})
-            self.sse_supported = capabilities.get("mcpCapabilities",
-                                                  {}).get("sse", False)
-            self.http_supported = capabilities.get("mcpCapabilities",
-                                                   {}).get("http", False)
+            result = res.get("result") or {}
+            capabilities = result.get("agentCapabilities") or {}
+            mcp_caps = capabilities.get("mcpCapabilities") if isinstance(capabilities, dict) else None
+            if not isinstance(mcp_caps, dict):
+                mcp_caps = {}
+
+            self.sse_supported = bool(mcp_caps.get("sse", False))
+            self.http_supported = bool(mcp_caps.get("http", False))
             print(
                 f"[{datetime.now()}] Agent '{self.agent_name}' ACP initialized. SSE support: {self.sse_supported}, HTTP support: {self.http_supported}"
             )
