@@ -10,6 +10,7 @@ from mattermost_api import MattermostAPI
 from utils import clean_message
 from utils import get_session_key
 from utils import load_user_mapping
+from utils import load_prewarm_config
 
 CACHE_TTL = 60  # Update cache every 60 seconds
 THINKING_MSG = ":thinking_face: **Thinking...**"
@@ -59,7 +60,7 @@ class MattermostBridge:
             self.agent_client_factory = agent_client_factory or (
                 lambda user, agent: ACPClient(user, agent, config=self.config))
 
-        self.agent_clients: Dict[Tuple[str, str], ACPClient] = {}
+        self.agent_clients: Dict[Tuple[Optional[str], str], ACPClient] = {}
         self.goose_clients = GooseClientsCompatDict(self)
         self.sessions = {}
         self.active_tasks = {}
@@ -97,7 +98,69 @@ class MattermostBridge:
                 f"[{datetime.now()}] WARNING: No user mapping found. Bridge will run as current user for all requests."
             )
 
+        await self._prewarm_agents()
+
         return True
+
+    async def _prewarm_agents(self):
+        """Pre-warms configured agent ACP processes on startup."""
+        prewarm_config = load_prewarm_config(self.config.prewarm_config_file,
+                                             self.config.prewarm_users)
+        if not prewarm_config:
+            return
+
+        user_mapping = load_user_mapping(self.config.user_mapping_file)
+        print(
+            f"[{datetime.now()}] Pre-warming configured agent ACP processes..."
+        )
+
+        for user_key, agent_specs in prewarm_config.items():
+            linux_user = None
+            if user_mapping:
+                linux_user = user_mapping.get(user_key)
+                if not linux_user and user_key in user_mapping.values():
+                    linux_user = user_key
+
+            if not linux_user and not self.config.require_user_mapping:
+                try:
+                    import pwd
+                    pwd.getpwnam(user_key)
+                    linux_user = user_key
+                except (KeyError, ImportError):
+                    linux_user = None
+
+            if self.config.require_user_mapping and not linux_user:
+                print(
+                    f"[{datetime.now()}] Skipping pre-warm for '{user_key}': No Linux user mapping and REQUIRE_USER_MAPPING=true"
+                )
+                continue
+
+            for agent_spec in agent_specs:
+                if agent_spec == "default":
+                    agent_name = self._get_user_default_agent(user_key)
+                else:
+                    agent_name = agent_spec
+
+                if self.config.agents and agent_name not in self.config.agents:
+                    print(
+                        f"[{datetime.now()}] Unknown agent '{agent_name}' for pre-warm user '{user_key}', falling back to default agent '{self.config.default_agent}'"
+                    )
+                    agent_name = self.config.default_agent
+
+                client_key = (linux_user, agent_name)
+                try:
+                    if client_key not in self.agent_clients:
+                        self.agent_clients[client_key] = self.agent_client_factory(
+                            linux_user, agent_name)
+                    client = self.agent_clients[client_key]
+                    print(
+                        f"[{datetime.now()}] Pre-warming agent '{agent_name}' for user '{user_key}' (linux_user={linux_user})..."
+                    )
+                    await client.ensure_running()
+                except Exception as e:
+                    print(
+                        f"[{datetime.now()}] Failed to pre-warm agent '{agent_name}' for user '{user_key}': {e}"
+                    )
 
     async def _update_channel_cache(self):
         """Updates the internal cache of Mattermost channels."""

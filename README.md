@@ -148,6 +148,8 @@ The bridge is configured via environment variables in the `.env` file:
 | `APPROVED_USERS` | A comma-separated list of usernames or user IDs authorized to use the bot. If empty, any user who can reach the bot can use it. | (None) |
 | `ADMIN_USERS` | A comma-separated list of usernames or user IDs authorized as administrators to run admin-only commands (e.g., `!impersonate`). | (None) |
 | `USER_MAPPING_FILE` | Path to the JSON configuration file for OS-level user isolation. | `user_mapping.json` |
+| `PREWARM_CONFIG_FILE` | Path to the JSON configuration file for pre-warming agent ACP processes on startup. | `prewarm_config.json` |
+| `PREWARM_USERS` | Optional comma-separated shorthand for pre-warming users and agents on startup (e.g., `user1:hermes,user2:goose`). | (None) |
 | `POLL_INTERVAL` | How often (in seconds) the bridge checks for new messages. | `1` |
 | `DEBUG` | Set to `true` to see detailed JSON-RPC logs for troubleshooting. | `false` |
 | `GOOSE_THINKING_TRACE` | When enabled, the agent's internal "thinking" steps are shown as message attachments. | `true` |

@@ -1198,4 +1198,106 @@ async def test_handle_agent_default_command(config, mock_api, tmp_path):
     assert bridge._get_user_default_agent("u1") == "hermes"
 
 
+@pytest.mark.asyncio
+async def test_prewarm_agents_success(config, mock_api, tmp_path):
+    prewarm_file = tmp_path / "prewarm.json"
+    mapping_file = tmp_path / "user_mapping.json"
+    import json
+    prewarm_file.write_text(json.dumps({
+        "alice": ["hermes"],
+        "bob": ["goose", "default"]
+    }))
+    mapping_file.write_text(json.dumps({
+        "alice": "linux_alice"
+    }))
+
+    config.prewarm_config_file = str(prewarm_file)
+    config.user_mapping_file = str(mapping_file)
+    config.agents = {
+        "goose": {"command": ["goose", "acp"]},
+        "hermes": {"command": ["hermes", "acp"]}
+    }
+
+    created_clients = {}
+
+    def mock_factory(user, agent):
+        from unittest.mock import AsyncMock, MagicMock
+        m = MagicMock()
+        m.ensure_running = AsyncMock()
+        created_clients[(user, agent)] = m
+        return m
+
+    bridge = MattermostBridge(api=mock_api, config=config, agent_client_factory=mock_factory)
+    success = await bridge.initialize()
+    assert success is True
+
+    # alice is mapped to linux_alice -> ("linux_alice", "hermes")
+    assert ("linux_alice", "hermes") in bridge.agent_clients
+    assert created_clients[("linux_alice", "hermes")].ensure_running.called
+
+    # bob is unmapped -> (None, "goose") and (None, "default" -> "goose")
+    assert (None, "goose") in bridge.agent_clients
+    assert created_clients[(None, "goose")].ensure_running.called
+
+
+@pytest.mark.asyncio
+async def test_prewarm_agents_require_user_mapping(config, mock_api, tmp_path):
+    prewarm_file = tmp_path / "prewarm.json"
+    mapping_file = tmp_path / "user_mapping.json"
+    import json
+    prewarm_file.write_text(json.dumps({
+        "unmapped_user": ["hermes"]
+    }))
+    mapping_file.write_text(json.dumps({}))
+
+    config.prewarm_config_file = str(prewarm_file)
+    config.user_mapping_file = str(mapping_file)
+    config.require_user_mapping = True
+    config.agents = {"hermes": {"command": ["hermes", "acp"]}}
+
+    created_clients = {}
+
+    def mock_factory(user, agent):
+        from unittest.mock import AsyncMock, MagicMock
+        m = MagicMock()
+        m.ensure_running = AsyncMock()
+        created_clients[(user, agent)] = m
+        return m
+
+    bridge = MattermostBridge(api=mock_api, config=config, agent_client_factory=mock_factory)
+    success = await bridge.initialize()
+    assert success is True
+    assert len(bridge.agent_clients) == 0
+
+
+@pytest.mark.asyncio
+async def test_prewarm_agents_fault_tolerance(config, mock_api, tmp_path):
+    config.prewarm_users = "user1:failing_agent,user2:good_agent"
+    config.agents = {
+        "failing_agent": {"command": ["fail"]},
+        "good_agent": {"command": ["good"]}
+    }
+
+    created_clients = {}
+
+    def mock_factory(user, agent):
+        from unittest.mock import AsyncMock, MagicMock
+        m = MagicMock()
+        if agent == "failing_agent":
+            m.ensure_running = AsyncMock(side_effect=RuntimeError("Process spawn failed"))
+        else:
+            m.ensure_running = AsyncMock()
+        created_clients[(user, agent)] = m
+        return m
+
+    bridge = MattermostBridge(api=mock_api, config=config, agent_client_factory=mock_factory)
+    success = await bridge.initialize()
+    assert success is True
+
+    # failing_agent failed but good_agent still started
+    assert (None, "good_agent") in bridge.agent_clients
+    assert created_clients[(None, "good_agent")].ensure_running.called
+
+
+
 
