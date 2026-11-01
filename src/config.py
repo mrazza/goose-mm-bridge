@@ -48,6 +48,9 @@ class Config:
     default_agent: str = os.getenv("DEFAULT_AGENT", "goose")
     user_agent_preferences_file: str = os.getenv("USER_AGENT_PREFERENCES_FILE",
                                                  "user_agent_preferences.json")
+    prewarm_config_file: str = os.getenv("PREWARM_CONFIG_FILE",
+                                         "prewarm_config.json")
+    prewarm_users: Optional[str] = os.getenv("PREWARM_USERS")
     agents: dict = None
 
     def __post_init__(self):
@@ -200,6 +203,8 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
         "AGENTS_CONFIG_FILE": ("agents_config_file", str),
         "DEFAULT_AGENT": ("default_agent", str),
         "USER_AGENT_PREFERENCES_FILE": ("user_agent_preferences_file", str),
+        "PREWARM_CONFIG_FILE": ("prewarm_config_file", str),
+        "PREWARM_USERS": ("prewarm_users", str),
     }
 
     for env_key, val in user_env.items():

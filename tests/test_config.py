@@ -179,3 +179,42 @@ def test_load_user_config_with_hermes(tmp_path):
     assert loaded.hermes_provider == "openrouter"
     assert loaded.hermes_model == "nousresearch/hermes-3-llama-3.1-405b"
     assert loaded.goose_thinking_trace is False
+
+
+def test_config_prewarm_defaults():
+    config = Config()
+    assert config.prewarm_config_file == "prewarm_config.json"
+    assert config.prewarm_users is None
+
+
+def test_config_prewarm_env():
+    env = {
+        "PREWARM_CONFIG_FILE": "custom_prewarm.json",
+        "PREWARM_USERS": "alice:hermes,bob:goose"
+    }
+    with patch.dict(os.environ, env):
+        config = Config(
+            prewarm_config_file=os.getenv("PREWARM_CONFIG_FILE", ""),
+            prewarm_users=os.getenv("PREWARM_USERS")
+        )
+        assert config.prewarm_config_file == "custom_prewarm.json"
+        assert config.prewarm_users == "alice:hermes,bob:goose"
+
+
+def test_load_user_config_with_prewarm(tmp_path):
+    from config import load_user_config
+    user_dir = tmp_path / "user_configs"
+    user_dir.mkdir()
+    user_file = user_dir / "user.env"
+    user_file.write_text(
+        "PREWARM_CONFIG_FILE=user_prewarm.json\n"
+        "PREWARM_USERS=user:hermes\n"
+    )
+
+    config = Config()
+    config.user_configs_dir = str(user_dir)
+    loaded = load_user_config("user", config)
+
+    assert loaded.prewarm_config_file == "user_prewarm.json"
+    assert loaded.prewarm_users == "user:hermes"
+

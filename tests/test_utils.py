@@ -1,5 +1,6 @@
 import json
 import os
+from unittest.mock import patch
 
 from hypothesis import given
 from hypothesis import strategies as st
@@ -45,3 +46,39 @@ def test_load_user_mapping_exception(tmp_path):
     mapping_file = tmp_path / "mapping.json"
     mapping_file.write_text("{invalid json}")
     assert load_user_mapping(str(mapping_file)) == {}
+
+
+def test_load_prewarm_config(tmp_path):
+    from utils import load_prewarm_config
+    config_file = tmp_path / "prewarm.json"
+    data = {
+        "user1": ["hermes"],
+        "user2": ["goose", "hermes"],
+        "user3": "default"
+    }
+    config_file.write_text(json.dumps(data))
+
+    loaded = load_prewarm_config(str(config_file))
+    assert loaded == {
+        "user1": ["hermes"],
+        "user2": ["goose", "hermes"],
+        "user3": ["default"]
+    }
+
+    # With prewarm_users shorthand override/supplement
+    loaded_with_env = load_prewarm_config(str(config_file), "user1:goose,user4:hermes+default,user5")
+    assert "hermes" in loaded_with_env["user1"]
+    assert "goose" in loaded_with_env["user1"]
+    assert loaded_with_env["user4"] == ["hermes", "default"]
+    assert loaded_with_env["user5"] == ["default"]
+
+    # Relative path test
+    rel_file = tmp_path / "rel_prewarm.json"
+    rel_file.write_text('{"rel_user": ["hermes"]}')
+    with patch("config.project_root", str(tmp_path)):
+        assert load_prewarm_config("rel_prewarm.json") == {"rel_user": ["hermes"]}
+
+    # Invalid JSON
+    invalid_file = tmp_path / "invalid.json"
+    invalid_file.write_text("{invalid")
+    assert load_prewarm_config(str(invalid_file), None) == {}
