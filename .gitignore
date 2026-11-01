@@ -210,3 +210,4 @@ __marimo__/
 user_mapping.json
 user_agent_preferences.json
 user_configs/
+prewarm_config.json
