@@ -20,6 +20,7 @@ def base_config():
         approved_users=[],
         poll_interval=0.01,
         debug=True,
+        prewarm_config_file="nonexistent_prewarm.json",
     )
 
 
