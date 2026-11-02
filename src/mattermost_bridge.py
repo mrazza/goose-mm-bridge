@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime
 import os
+import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -75,6 +76,7 @@ class MattermostBridge:
         self.thread_counters = {}  # Track message counts per thread
         self.impersonations = {
         }  # Admin impersonation state: admin_id -> {"id": target_id, "username": target_username}
+        self.is_shutting_down = False
 
     async def initialize(self) -> bool:
         """Initializes the bridge by connecting to Mattermost."""
@@ -348,6 +350,121 @@ class MattermostBridge:
             cid,
             f"👤 *You are now impersonating @{target_username} (`{target_id}`). All subsequent prompts will run in their context.*",
             root_id=root_id)
+
+    async def _handle_restart_command(self, post: dict):
+        """Handles the !restart command for administrators."""
+        sender_id = post["user_id"]
+        cid = post["channel_id"]
+        root_id = post.get("root_id") or post["id"]
+
+        user_info = await self.api.get_user(sender_id)
+        username = user_info.get("username") if user_info else "unknown"
+
+        is_admin = False
+        if self.config.admin_users:
+            if sender_id in self.config.admin_users or username in self.config.admin_users:
+                is_admin = True
+
+        if not is_admin:
+            await self.api.create_post(
+                cid,
+                "⚠️ Permission denied: Only administrators can use the `!restart` command.",
+                root_id=root_id)
+            return
+
+        await self.api.create_post(
+            cid,
+            "🔄 *Restarting goose-mm-bridge service... Gracefully closing active sessions.*",
+            root_id=root_id)
+
+        await self.graceful_shutdown()
+        sys.exit(0)
+
+    async def graceful_shutdown(self):
+        """Gracefully cancels active prompts, closes all ACP sessions, terminates ACP subprocesses, and drains background tasks."""
+        self.is_shutting_down = True
+
+        # 1. Cancel in-flight active prompt tasks
+        for session_key, task in list(self.active_tasks.items()):
+            if task and not task.done():
+                task.cancel()
+
+        # 2. Close all active sessions via ACP
+        close_tasks = []
+        user_mapping = load_user_mapping(self.config.user_mapping_file)
+        for session_key, session_data in list(self.sessions.items()):
+            sid = session_data.get("id")
+            if not sid:
+                continue
+            eff_id = session_key.split(
+                ":")[0] if ":" in session_key else session_key
+            target_linux_user = session_data.get(
+                "linux_user") or user_mapping.get(eff_id)
+            agent_name = session_data.get(
+                "agent_name") or self.config.default_agent
+            client_key = (target_linux_user, agent_name)
+
+            client = self.agent_clients.get(
+                client_key) or self.agent_clients.get((None, agent_name))
+            if client:
+                try:
+                    await client.cancel_prompt(sid)
+                except Exception as e:
+                    if self.config.debug:
+                        print(
+                            f"DEBUG: Error cancelling prompt for session {sid}: {e}"
+                        )
+
+                async def _close_session(c, s_id):
+                    try:
+                        await asyncio.wait_for(c.send_request(
+                            "session/close", {"sessionId": s_id}),
+                                               timeout=3.0)
+                    except Exception as e:
+                        if self.config.debug:
+                            print(f"DEBUG: Error closing session {s_id}: {e}")
+
+                close_tasks.append(_close_session(client, sid))
+
+        if close_tasks:
+            await asyncio.gather(*close_tasks, return_exceptions=True)
+
+        for client in self.agent_clients.values():
+            client.session_queues.clear()
+        self.sessions.clear()
+        self.session_locks.clear()
+
+        # 3. Terminate ACP Subprocesses
+        for client in list(self.agent_clients.values()):
+            if client.process and client.process.returncode is None:
+                try:
+                    client.process.terminate()
+                    if hasattr(client.process, "wait"):
+                        try:
+                            wait_res = client.process.wait()
+                            if asyncio.iscoroutine(wait_res):
+                                await asyncio.wait_for(wait_res, timeout=3.0)
+                        except (asyncio.TimeoutError, TimeoutError, Exception):
+                            if hasattr(client.process, "kill"):
+                                try:
+                                    client.process.kill()
+                                except Exception:
+                                    pass
+                except Exception as e:
+                    if self.config.debug:
+                        print(f"DEBUG: Error terminating client process: {e}")
+
+        # 4. Drain Background Tasks
+        current = asyncio.current_task()
+        for task in list(self.background_tasks):
+            if task is not current and not task.done():
+                task.cancel()
+        pending = [
+            t for t in self.background_tasks
+            if t is not current and not t.done()
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     def _get_user_default_agent(self, user_id: str) -> str:
         """Retrieves the persistent default agent for a user."""
@@ -817,6 +934,13 @@ class MattermostBridge:
 
         cleaned_msg = clean_message(message, self.bot_mention)
 
+        # Special Command: !restart
+        if cleaned_msg.strip().lower() == "!restart":
+            if not is_dm and not is_mentioned:
+                return
+            await self._handle_restart_command(post)
+            return
+
         # Special Command: !impersonate
         if cleaned_msg.lower().startswith("!impersonate"):
             await self._handle_impersonate_command(post, cleaned_msg)
@@ -918,13 +1042,15 @@ class MattermostBridge:
         )
 
         try:
-            while True:
+            while not self.is_shutting_down:
                 try:
                     await self._update_channel_cache()
                     channel_map = {c["id"]: c for c in self.channels_cache}
 
                     new_since = self.last_since
                     for cid in channel_map.keys():
+                        if self.is_shutting_down:
+                            break
                         posts_data = await self.api.get_channel_posts(
                             cid, self.last_since)
                         if not posts_data or "posts" not in posts_data:
@@ -934,16 +1060,21 @@ class MattermostBridge:
                                               key=lambda x: x["create_at"])
 
                         for post in sorted_posts:
+                            if self.is_shutting_down:
+                                break
                             if post["create_at"] <= self.last_since:
                                 continue
                             new_since = max(new_since, post["create_at"])
                             await self._process_post(post, channel_map)
 
-                    await self._prune_sessions()
-                    self.last_since = new_since
-                    await asyncio.sleep(self.config.poll_interval)
+                    if not self.is_shutting_down:
+                        await self._prune_sessions()
+                        self.last_since = new_since
+                        await asyncio.sleep(self.config.poll_interval)
 
                 except Exception as e:
+                    if self.is_shutting_down:
+                        break
                     print(f"[{datetime.now()}] Bridge Loop Error: {e}")
                     await asyncio.sleep(5)
         except KeyboardInterrupt:

@@ -1299,5 +1299,162 @@ async def test_prewarm_agents_fault_tolerance(config, mock_api, tmp_path):
     assert created_clients[(None, "good_agent")].ensure_running.called
 
 
+@pytest.mark.asyncio
+async def test_restart_command_permission_denied(config, mock_api):
+    config.admin_users = ["admin1"]
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.bot_id = "bot_id"
+    bridge.bot_username = "bot"
+    bridge.bot_mention = "@bot"
+    mock_api.get_user = AsyncMock(return_value={"id": "u1", "username": "user1"})
+
+    post = {
+        "id": "p1",
+        "user_id": "u1",
+        "channel_id": "c1",
+        "message": "@bot !restart"
+    }
+
+    await bridge._process_post(post, {"c1": {"type": "O"}})
+
+    assert mock_api.create_post.called
+    args, _ = mock_api.create_post.call_args
+    assert "Permission denied: Only administrators can use the `!restart` command" in args[1]
+    assert bridge.is_shutting_down is False
+
+
+@pytest.mark.asyncio
+async def test_restart_command_ignored_when_not_dm_and_not_mentioned(config, mock_api):
+    config.admin_users = ["admin1"]
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.bot_id = "bot_id"
+    bridge.bot_username = "bot"
+    bridge.bot_mention = "@bot"
+    mock_api.get_user = AsyncMock(return_value={"id": "admin1", "username": "admin1"})
+
+    post = {
+        "id": "p1",
+        "user_id": "admin1",
+        "channel_id": "c1",
+        "message": "!restart"
+    }
+
+    # Public channel without mention
+    await bridge._process_post(post, {"c1": {"type": "O"}})
+
+    assert not mock_api.create_post.called
+    assert bridge.is_shutting_down is False
+
+
+@pytest.mark.asyncio
+async def test_restart_command_admin_success(config, mock_api):
+    config.admin_users = ["admin1"]
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.bot_id = "bot_id"
+    bridge.bot_username = "bot"
+    bridge.bot_mention = "@bot"
+    mock_api.get_user = AsyncMock(return_value={"id": "admin1", "username": "admin1"})
+
+    bridge.graceful_shutdown = AsyncMock()
+
+    post = {
+        "id": "p1",
+        "user_id": "admin1",
+        "channel_id": "c1",
+        "message": "@bot !restart"
+    }
+
+    with pytest.raises(SystemExit) as exc_info:
+        await bridge._process_post(post, {"c1": {"type": "O"}})
+
+    assert exc_info.value.code == 0
+    assert mock_api.create_post.called
+    args, _ = mock_api.create_post.call_args
+    assert "Restarting goose-mm-bridge service... Gracefully closing active sessions." in args[1]
+    assert bridge.graceful_shutdown.called
+
+
+@pytest.mark.asyncio
+async def test_graceful_shutdown_full_flow(config, mock_api):
+    bridge = MattermostBridge(api=mock_api, config=config)
+
+    # Setup mock ACP client
+    mock_client = MagicMock()
+    mock_client.cancel_prompt = AsyncMock(return_value=True)
+    mock_client.send_request = AsyncMock(return_value={})
+    mock_client.session_queues = {"s1": asyncio.Queue()}
+    mock_client.process = MagicMock()
+    mock_client.process.returncode = None
+    mock_client.process.terminate = MagicMock()
+    mock_client.process.wait = AsyncMock(return_value=0)
+
+    bridge.agent_clients = {("linux_user", "goose"): mock_client}
+    bridge.sessions = {
+        "user1:root1": {
+            "id": "s1",
+            "linux_user": "linux_user",
+            "agent_name": "goose"
+        }
+    }
+    bridge.session_locks = {"user1:root1": asyncio.Lock()}
+
+    # Setup active task
+    async def dummy_task():
+        await asyncio.sleep(10)
+
+    active_task = asyncio.create_task(dummy_task())
+    bridge.active_tasks = {"user1:root1": active_task}
+
+    # Setup background task
+    bg_task = asyncio.create_task(dummy_task())
+    bridge.background_tasks.add(bg_task)
+
+    await bridge.graceful_shutdown()
+
+    assert bridge.is_shutting_down is True
+    assert active_task.cancelled()
+    assert bg_task.cancelled()
+    mock_client.cancel_prompt.assert_awaited_once_with("s1")
+    mock_client.send_request.assert_awaited_once_with("session/close", {"sessionId": "s1"})
+    assert len(bridge.sessions) == 0
+    assert len(bridge.session_locks) == 0
+    assert len(mock_client.session_queues) == 0
+    mock_client.process.terminate.assert_called_once()
+    mock_client.process.wait.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_graceful_shutdown_process_kill_on_timeout(config, mock_api):
+    bridge = MattermostBridge(api=mock_api, config=config)
+
+    mock_client = MagicMock()
+    mock_client.session_queues = {}
+    mock_client.process = MagicMock()
+    mock_client.process.returncode = None
+    mock_client.process.terminate = MagicMock()
+
+    async def hanging_wait():
+        await asyncio.sleep(10)
+
+    mock_client.process.wait = hanging_wait
+    mock_client.process.kill = MagicMock()
+
+    bridge.agent_clients = {("linux_user", "goose"): mock_client}
+
+    # Patch wait_for with a tiny timeout to test kill path quickly
+    orig_wait_for = asyncio.wait_for
+
+    async def fast_wait_for(fut, timeout):
+        if timeout == 3.0:
+            return await orig_wait_for(fut, 0.01)
+        return await orig_wait_for(fut, timeout)
+
+    with patch("asyncio.wait_for", side_effect=fast_wait_for):
+        await bridge.graceful_shutdown()
+
+    mock_client.process.terminate.assert_called_once()
+    mock_client.process.kill.assert_called_once()
+
+
 
 

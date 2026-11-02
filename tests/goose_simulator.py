@@ -15,6 +15,8 @@ class MockProcess:
         self.stderr = asyncio.StreamReader()
         self.returncode = None
         self.terminate = MagicMock()
+        self.kill = MagicMock()
+        self.wait = AsyncMock(return_value=0)
 
     def feed_stdout(self, data: dict):
         """Feeds a JSON-RPC message into the stdout stream."""
