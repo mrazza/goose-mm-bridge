@@ -113,8 +113,7 @@ class MattermostBridge:
 
         user_mapping = load_user_mapping(self.config.user_mapping_file)
         print(
-            f"[{datetime.now()}] Pre-warming configured agent ACP processes..."
-        )
+            f"[{datetime.now()}] Pre-warming configured agent ACP processes...")
 
         for user_key, agent_specs in prewarm_config.items():
             linux_user = None
@@ -152,8 +151,9 @@ class MattermostBridge:
                 client_key = (linux_user, agent_name)
                 try:
                     if client_key not in self.agent_clients:
-                        self.agent_clients[client_key] = self.agent_client_factory(
-                            linux_user, agent_name)
+                        self.agent_clients[
+                            client_key] = self.agent_client_factory(
+                                linux_user, agent_name)
                     client = self.agent_clients[client_key]
                     print(
                         f"[{datetime.now()}] Pre-warming agent '{agent_name}' for user '{user_key}' (linux_user={linux_user})..."
@@ -270,21 +270,24 @@ class MattermostBridge:
 
         await self.api.create_post(cid, msg, root_id=root_id)
 
+    async def _is_admin(self, user_id: str) -> bool:
+        """Checks if a user is an administrator based on config.admin_users."""
+        if not self.config.admin_users:
+            return False
+        if user_id in self.config.admin_users:
+            return True
+        user_info = await self.api.get_user(user_id)
+        if user_info and user_info.get("username") in self.config.admin_users:
+            return True
+        return False
+
     async def _handle_impersonate_command(self, post: dict, cleaned_msg: str):
         """Handles the !impersonate command for administrators."""
         sender_id = post["user_id"]
         cid = post["channel_id"]
         root_id = post.get("root_id") or post["id"]
 
-        user_info = await self.api.get_user(sender_id)
-        username = user_info.get("username") if user_info else "unknown"
-
-        is_admin = False
-        if self.config.admin_users:
-            if sender_id in self.config.admin_users or username in self.config.admin_users:
-                is_admin = True
-
-        if not is_admin:
+        if not await self._is_admin(sender_id):
             await self.api.create_post(
                 cid,
                 "⚠️ Permission denied: Only administrators can use the `!impersonate` command.",
@@ -357,15 +360,7 @@ class MattermostBridge:
         cid = post["channel_id"]
         root_id = post.get("root_id") or post["id"]
 
-        user_info = await self.api.get_user(sender_id)
-        username = user_info.get("username") if user_info else "unknown"
-
-        is_admin = False
-        if self.config.admin_users:
-            if sender_id in self.config.admin_users or username in self.config.admin_users:
-                is_admin = True
-
-        if not is_admin:
+        if not await self._is_admin(sender_id):
             await self.api.create_post(
                 cid,
                 "⚠️ Permission denied: Only administrators can use the `!restart` command.",
@@ -392,6 +387,23 @@ class MattermostBridge:
         # 2. Close all active sessions via ACP
         close_tasks = []
         user_mapping = load_user_mapping(self.config.user_mapping_file)
+
+        async def _close_session(c, s_id):
+            try:
+                await c.cancel_prompt(s_id)
+            except Exception as e:
+                if self.config.debug:
+                    print(
+                        f"DEBUG: Error cancelling prompt for session {s_id}: {e}"
+                    )
+            try:
+                await asyncio.wait_for(c.send_request("session/close",
+                                                      {"sessionId": s_id}),
+                                       timeout=3.0)
+            except Exception as e:
+                if self.config.debug:
+                    print(f"DEBUG: Error closing session {s_id}: {e}")
+
         for session_key, session_data in list(self.sessions.items()):
             sid = session_data.get("id")
             if not sid:
@@ -407,23 +419,6 @@ class MattermostBridge:
             client = self.agent_clients.get(
                 client_key) or self.agent_clients.get((None, agent_name))
             if client:
-                try:
-                    await client.cancel_prompt(sid)
-                except Exception as e:
-                    if self.config.debug:
-                        print(
-                            f"DEBUG: Error cancelling prompt for session {sid}: {e}"
-                        )
-
-                async def _close_session(c, s_id):
-                    try:
-                        await asyncio.wait_for(c.send_request(
-                            "session/close", {"sessionId": s_id}),
-                                               timeout=3.0)
-                    except Exception as e:
-                        if self.config.debug:
-                            print(f"DEBUG: Error closing session {s_id}: {e}")
-
                 close_tasks.append(_close_session(client, sid))
 
         if close_tasks:
@@ -435,7 +430,7 @@ class MattermostBridge:
         self.session_locks.clear()
 
         # 3. Terminate ACP Subprocesses
-        for client in list(self.agent_clients.values()):
+        async def _terminate_client_process(client):
             if client.process and client.process.returncode is None:
                 try:
                     client.process.terminate()
@@ -453,6 +448,13 @@ class MattermostBridge:
                 except Exception as e:
                     if self.config.debug:
                         print(f"DEBUG: Error terminating client process: {e}")
+
+        terminate_tasks = [
+            _terminate_client_process(client)
+            for client in list(self.agent_clients.values())
+        ]
+        if terminate_tasks:
+            await asyncio.gather(*terminate_tasks, return_exceptions=True)
 
         # 4. Drain Background Tasks
         current = asyncio.current_task()
