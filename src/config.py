@@ -18,8 +18,11 @@ class Config:
     admin_users: List[str] = None
     poll_interval: int = int(os.getenv("POLL_INTERVAL", "1"))
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
-    goose_thinking_trace: bool = (os.getenv("THINKING_TRACE") or os.getenv("GOOSE_THINKING_TRACE", "true")).lower() == "true"
-    goose_thinking_trace_simplified: bool = (os.getenv("THINKING_TRACE_SIMPLIFIED") or os.getenv("GOOSE_THINKING_TRACE_SIMPLIFIED", "true")).lower() == "true"
+    goose_thinking_trace: bool = (os.getenv("THINKING_TRACE") or os.getenv(
+        "GOOSE_THINKING_TRACE", "true")).lower() == "true"
+    goose_thinking_trace_simplified: bool = (
+        os.getenv("THINKING_TRACE_SIMPLIFIED") or
+        os.getenv("GOOSE_THINKING_TRACE_SIMPLIFIED", "true")).lower() == "true"
     rpc_timeout: int = int(os.getenv("RPC_TIMEOUT", "600"))
     max_sessions: int = int(os.getenv("MAX_SESSIONS", "100"))
     user_mapping_file: str = os.getenv("USER_MAPPING_FILE", "user_mapping.json")
@@ -36,7 +39,8 @@ class Config:
     goose_mistral_api_key: Optional[str] = os.getenv("MISTRAL_API_KEY")
     hermes_provider: Optional[str] = os.getenv("HERMES_PROVIDER")
     hermes_model: Optional[str] = os.getenv("HERMES_MODEL")
-    hermes_inference_provider: Optional[str] = os.getenv("HERMES_INFERENCE_PROVIDER")
+    hermes_inference_provider: Optional[str] = os.getenv(
+        "HERMES_INFERENCE_PROVIDER")
     hermes_inference_model: Optional[str] = os.getenv("HERMES_INFERENCE_MODEL")
     hermes_yolo_mode: Optional[str] = os.getenv("HERMES_YOLO_MODE")
     goose_builtin_extensions: List[str] = None
@@ -51,6 +55,9 @@ class Config:
     prewarm_config_file: str = os.getenv("PREWARM_CONFIG_FILE",
                                          "prewarm_config.json")
     prewarm_users: Optional[str] = os.getenv("PREWARM_USERS")
+    allow_model_control: bool = os.getenv("ALLOW_MODEL_CONTROL",
+                                          "true").lower() == "true"
+    model_control_users: Optional[List[str]] = None
     agents: dict = None
 
     def __post_init__(self):
@@ -68,6 +75,13 @@ class Config:
             ]
         if self.goose_provider is None:
             self.goose_provider = os.getenv("GOOSE_PROVIDER")
+        if self.model_control_users is None and os.getenv(
+                "MODEL_CONTROL_USERS"):
+            self.model_control_users = [
+                u.strip()
+                for u in os.getenv("MODEL_CONTROL_USERS", "").split(",")
+                if u.strip()
+            ]
         if self.goose_model is None:
             self.goose_model = os.getenv("GOOSE_MODEL")
         if self.goose_openai_api_key is None:
@@ -83,7 +97,8 @@ class Config:
         if getattr(self, "hermes_model", None) is None:
             self.hermes_model = os.getenv("HERMES_MODEL")
         if getattr(self, "hermes_inference_provider", None) is None:
-            self.hermes_inference_provider = os.getenv("HERMES_INFERENCE_PROVIDER")
+            self.hermes_inference_provider = os.getenv(
+                "HERMES_INFERENCE_PROVIDER")
         if getattr(self, "hermes_inference_model", None) is None:
             self.hermes_inference_model = os.getenv("HERMES_INFERENCE_MODEL")
         if getattr(self, "hermes_yolo_mode", None) is None:
@@ -179,7 +194,8 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
         "GOOSE_THINKING_TRACE_SIMPLIFIED":
             ("goose_thinking_trace_simplified", parse_bool),
         "THINKING_TRACE": ("goose_thinking_trace", parse_bool),
-        "THINKING_TRACE_SIMPLIFIED": ("goose_thinking_trace_simplified", parse_bool),
+        "THINKING_TRACE_SIMPLIFIED":
+            ("goose_thinking_trace_simplified", parse_bool),
         "RPC_TIMEOUT": ("rpc_timeout", int),
         "MAX_SESSIONS": ("max_sessions", int),
         "USER_MAPPING_FILE": ("user_mapping_file", str),
@@ -205,6 +221,8 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
         "USER_AGENT_PREFERENCES_FILE": ("user_agent_preferences_file", str),
         "PREWARM_CONFIG_FILE": ("prewarm_config_file", str),
         "PREWARM_USERS": ("prewarm_users", str),
+        "ALLOW_MODEL_CONTROL": ("allow_model_control", parse_bool),
+        "MODEL_CONTROL_USERS": ("model_control_users", parse_list),
     }
 
     for env_key, val in user_env.items():

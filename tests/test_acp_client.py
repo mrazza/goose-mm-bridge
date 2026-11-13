@@ -35,7 +35,7 @@ async def test_ensure_running(client):
 
         # Mock initialize handshake
         with patch.object(client, '_send_raw_request',
-                           new_callable=AsyncMock) as mock_raw:
+                          new_callable=AsyncMock) as mock_raw:
             mock_raw.return_value = {"result": {}}
             await client.ensure_running()
 
@@ -111,7 +111,7 @@ async def test_ensure_running_restart(client):
         mock_exec.return_value = new_process
 
         with patch.object(client, '_send_raw_request',
-                           new_callable=AsyncMock) as mock_raw:
+                          new_callable=AsyncMock) as mock_raw:
             mock_raw.return_value = {"result": {}}
             await client.ensure_running()
 
@@ -133,7 +133,7 @@ async def test_ensure_running_healthy_flag(client):
         mock_exec.return_value = new_process
 
         with patch.object(client, '_send_raw_request',
-                           new_callable=AsyncMock) as mock_raw:
+                          new_callable=AsyncMock) as mock_raw:
             mock_raw.return_value = {"result": {}}
             await client.ensure_running()
 
@@ -161,7 +161,7 @@ async def test_ensure_running_fails_pending_requests(client):
         mock_exec.return_value = mock_process
 
         with patch.object(client, '_send_raw_request',
-                           new_callable=AsyncMock) as mock_raw:
+                          new_callable=AsyncMock) as mock_raw:
             mock_raw.return_value = {"result": {}}
             await client.ensure_running()
 
@@ -232,9 +232,7 @@ async def test_prompt_success(client):
         # Check updates yielded
         assert len(updates) >= 4
         # Filter for content chunks
-        content_updates = [
-            u for u in updates if u["type"] == "content"
-        ]
+        content_updates = [u for u in updates if u["type"] == "content"]
         assert content_updates[-1]["text"] == "Hello world"
         assert updates[-1] == {"type": "final", "text": "Hello world"}
 
@@ -280,7 +278,8 @@ async def test_prompt_process_terminated_error(client):
         return await res_future
 
     with patch.object(client, 'send_request', side_effect=mock_send_request):
-        with pytest.raises(RuntimeError, match="ACP process terminated during prompt"):
+        with pytest.raises(RuntimeError,
+                           match="ACP process terminated during prompt"):
             async for _ in client.prompt(session_id, "hi"):
                 pass
 
@@ -338,11 +337,12 @@ async def test_prompt_stop_reason_warnings(client):
     async def run_with_stop_reason(reason):
         res_future = asyncio.Future()
         res_future.set_result({"result": {"stopReason": reason}})
-        
+
         async def mock_send_request(*args, **kwargs):
             return await res_future
 
-        with patch.object(client, 'send_request', side_effect=mock_send_request):
+        with patch.object(client, 'send_request',
+                          side_effect=mock_send_request):
             updates = []
             async for u in client.prompt(session_id, "hi"):
                 updates.append(u)
@@ -476,7 +476,10 @@ async def test_send_raw_request(client):
     async def mock_send():
         # Wait a tick then simulate stdout response
         await asyncio.sleep(0.01)
-        client.pending_requests[client.last_id_used].set_result({"id": client.last_id_used, "result": "ok"})
+        client.pending_requests[client.last_id_used].set_result({
+            "id": client.last_id_used,
+            "result": "ok"
+        })
 
     asyncio.create_task(mock_send())
     res = await client._send_raw_request("method_a", {"x": 1})
@@ -524,7 +527,8 @@ async def test_send_notification(client):
     client.process = MagicMock()
     client.process.stdin = mock_stdin
 
-    with patch.object(client, 'ensure_running', new_callable=AsyncMock) as mock_running:
+    with patch.object(client, 'ensure_running',
+                      new_callable=AsyncMock) as mock_running:
         await client.send_notification("notif_method", {"y": 2})
 
         assert mock_running.called
@@ -553,9 +557,15 @@ async def test_create_session(client):
 async def test_create_session_error(client):
     with patch.object(client, 'ensure_running', new_callable=AsyncMock),\
          patch.object(client, 'send_request', new_callable=AsyncMock) as mock_request:
-        mock_request.return_value = {"error": {"message": "session limit reached"}}
+        mock_request.return_value = {
+            "error": {
+                "message": "session limit reached"
+            }
+        }
 
-        with pytest.raises(Exception, match="Failed to create session: .*session limit reached"):
+        with pytest.raises(
+                Exception,
+                match="Failed to create session: .*session limit reached"):
             await client.create_session()
 
 
@@ -567,13 +577,21 @@ def test_parse_update_chunk_various(client):
                 "sessionUpdate": "call_tool",
                 "toolCall": {
                     "name": "read_file",
-                    "arguments": {"path": "a.txt"}
+                    "arguments": {
+                        "path": "a.txt"
+                    }
                 }
             }
         }
     }
     parsed = client._parse_update_chunk(chunk)
-    assert parsed == {"type": "tool", "name": "read_file", "arguments": {"path": "a.txt"}}
+    assert parsed == {
+        "type": "tool",
+        "name": "read_file",
+        "arguments": {
+            "path": "a.txt"
+        }
+    }
 
     # Test sessionUpdate tool_call
     chunk = {
@@ -585,7 +603,11 @@ def test_parse_update_chunk_various(client):
         }
     }
     parsed = client._parse_update_chunk(chunk)
-    assert parsed == {"type": "tool", "name": "fetching details", "arguments": {}}
+    assert parsed == {
+        "type": "tool",
+        "name": "fetching details",
+        "arguments": {}
+    }
 
     # Test sessionUpdate tool_call_update
     chunk = {
@@ -636,10 +658,14 @@ def test_parse_update_chunk_various(client):
 async def test_cancel_prompt(client):
     client.active_prompts["s1"] = 100
 
-    with patch.object(client, 'send_notification', new_callable=AsyncMock) as mock_notif:
+    with patch.object(client, 'send_notification',
+                      new_callable=AsyncMock) as mock_notif:
         res = await client.cancel_prompt("s1")
         assert res is True
-        mock_notif.assert_called_once_with("session/cancel", {"sessionId": "s1", "messageId": 100})
+        mock_notif.assert_called_once_with("session/cancel", {
+            "sessionId": "s1",
+            "messageId": 100
+        })
 
         # Test cancel on inactive session
         mock_notif.reset_mock()
@@ -656,13 +682,15 @@ async def test_start_command_line_and_env(config):
 
     client = ACPClient(config=config)
 
-    with patch('asyncio.create_subprocess_exec', new_callable=AsyncMock) as mock_exec:
+    with patch('asyncio.create_subprocess_exec',
+               new_callable=AsyncMock) as mock_exec:
         mock_process = MagicMock()
         mock_process.returncode = None
         mock_exec.return_value = mock_process
 
         # Mock initialize handshake
-        with patch.object(client, '_send_raw_request', new_callable=AsyncMock) as mock_raw:
+        with patch.object(client, '_send_raw_request',
+                          new_callable=AsyncMock) as mock_raw:
             mock_raw.return_value = {"result": {}}
             await client._start()
 
@@ -693,7 +721,8 @@ async def test_start_with_linux_user_and_env(config):
         mock_process.returncode = None
         mock_exec.return_value = mock_process
 
-        with patch.object(client, '_send_raw_request', new_callable=AsyncMock) as mock_raw:
+        with patch.object(client, '_send_raw_request',
+                          new_callable=AsyncMock) as mock_raw:
             mock_raw.return_value = {"result": {}}
             await client._start()
 
@@ -713,11 +742,9 @@ async def test_start_with_user_overrides(config, tmp_path):
     user_configs_dir = tmp_path / "user_configs"
     user_configs_dir.mkdir()
     user_file = user_configs_dir / "user1.env"
-    user_file.write_text(
-        "GOOSE_PROVIDER=google\n"
-        "GOOGLE_API_KEY=goog-key\n"
-        "CUSTOM_ENV_VAR=hello_world\n"
-    )
+    user_file.write_text("GOOSE_PROVIDER=google\n"
+                         "GOOGLE_API_KEY=goog-key\n"
+                         "CUSTOM_ENV_VAR=hello_world\n")
 
     config.user_configs_dir = str(user_configs_dir)
     config.goose_provider = "openai"
@@ -733,7 +760,8 @@ async def test_start_with_user_overrides(config, tmp_path):
         mock_process.returncode = None
         mock_exec.return_value = mock_process
 
-        with patch.object(client, '_send_raw_request', new_callable=AsyncMock) as mock_raw:
+        with patch.object(client, '_send_raw_request',
+                          new_callable=AsyncMock) as mock_raw:
             mock_raw.return_value = {"result": {}}
             await client._start()
 
@@ -761,13 +789,23 @@ async def test_start_with_user_overrides(config, tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("agent_capabilities,expected_sse,expected_http", [
-    ({"mcpCapabilities": {"sse": True, "http": True}}, True, True),
-    ({"mcpCapabilities": None}, False, False),
+    ({
+        "mcpCapabilities": {
+            "sse": True,
+            "http": True
+        }
+    }, True, True),
+    ({
+        "mcpCapabilities": None
+    }, False, False),
     ({}, False, False),
     (None, False, False),
-    ({"mcpCapabilities": "invalid"}, False, False),
+    ({
+        "mcpCapabilities": "invalid"
+    }, False, False),
 ])
-async def test_initialization_mcp_capabilities(client, agent_capabilities, expected_sse, expected_http):
+async def test_initialization_mcp_capabilities(client, agent_capabilities,
+                                               expected_sse, expected_http):
     mock_process = MagicMock()
     mock_process.returncode = None
 
@@ -775,10 +813,87 @@ async def test_initialization_mcp_capabilities(client, agent_capabilities, expec
     if agent_capabilities is not None:
         result_payload["agentCapabilities"] = agent_capabilities
 
-    with patch('asyncio.create_subprocess_exec', new_callable=AsyncMock) as mock_exec:
+    with patch('asyncio.create_subprocess_exec',
+               new_callable=AsyncMock) as mock_exec:
         mock_exec.return_value = mock_process
-        with patch.object(client, '_send_raw_request', new_callable=AsyncMock) as mock_raw:
+        with patch.object(client, '_send_raw_request',
+                          new_callable=AsyncMock) as mock_raw:
             mock_raw.return_value = {"result": result_payload}
             await client._start()
             assert client.sse_supported is expected_sse
             assert client.http_supported is expected_http
+
+
+@pytest.mark.asyncio
+async def test_create_session_with_models(client):
+    with patch.object(client, 'ensure_running', new_callable=AsyncMock),\
+         patch.object(client, 'send_request', new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = {
+            "result": {
+                "sessionId": "session_model_test",
+                "models": {
+                    "currentModelId":
+                        "claude-3-5-sonnet",
+                    "availableModels": [{
+                        "id": "claude-3-5-sonnet",
+                        "name": "Sonnet"
+                    }, {
+                        "id": "gpt-4o",
+                        "name": "GPT-4o"
+                    }]
+                }
+            }
+        }
+
+        sid = await client.create_session()
+        assert sid == "session_model_test"
+        models = client.get_models(sid)
+        assert models is not None
+        assert models["current_model"] == "claude-3-5-sonnet"
+        assert len(models["available_models"]) == 2
+        assert client.last_known_models == models
+
+
+@pytest.mark.asyncio
+async def test_set_model_success(client):
+    client.session_models["s1"] = {
+        "current_model": "old-model",
+        "available_models": ["old-model", "new-model"]
+    }
+    client.last_known_models = client.session_models["s1"]
+
+    with patch.object(client, 'ensure_running', new_callable=AsyncMock),\
+         patch.object(client, 'send_request', new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = {"result": {}}
+
+        res = await client.set_model("s1", "new-model")
+        assert res == {}
+        mock_request.assert_called_once_with("session/set_model", {
+            "sessionId": "s1",
+            "modelId": "new-model"
+        })
+        assert client.session_models["s1"]["current_model"] == "new-model"
+        assert client.last_known_models["current_model"] == "new-model"
+
+
+@pytest.mark.asyncio
+async def test_set_model_error(client):
+    with patch.object(client, 'ensure_running', new_callable=AsyncMock),\
+         patch.object(client, 'send_request', new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = {"error": {"message": "Invalid model ID"}}
+
+        with pytest.raises(Exception,
+                           match="Failed to set model: .*Invalid model ID"):
+            await client.set_model("s1", "invalid-model")
+
+
+@pytest.mark.asyncio
+async def test_get_models_fallback(client):
+    client.session_models.clear()
+    client.last_known_models = {
+        "current_model": "global-model",
+        "available_models": ["m1"]
+    }
+
+    assert client.get_models("non_existent") == client.last_known_models
+    assert client.get_models(None) == client.last_known_models

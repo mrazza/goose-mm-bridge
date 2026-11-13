@@ -35,6 +35,8 @@ class ACPClient:
         self._healthy = True
         self._start_lock = asyncio.Lock()
         self.context_usage: Dict[str, Dict[str, int]] = {}
+        self.session_models: Dict[str, Dict[str, Any]] = {}
+        self.last_known_models: Optional[Dict[str, Any]] = None
 
     async def ensure_running(self):
         """Ensures the agent ACP process is running, restarting it if necessary."""
@@ -54,6 +56,7 @@ class ACPClient:
                     self.pending_requests.clear()
                     # Clear session queues as they are tied to the old process
                     self.session_queues.clear()
+                    self.session_models.clear()
 
                 await self._start()
                 self._healthy = True
@@ -165,7 +168,8 @@ class ACPClient:
                                          timeout=self.config.rpc_timeout)
             result = res.get("result") or {}
             capabilities = result.get("agentCapabilities") or {}
-            mcp_caps = capabilities.get("mcpCapabilities") if isinstance(capabilities, dict) else None
+            mcp_caps = capabilities.get("mcpCapabilities") if isinstance(
+                capabilities, dict) else None
             if not isinstance(mcp_caps, dict):
                 mcp_caps = {}
 
@@ -326,9 +330,52 @@ class ACPClient:
         res = await self.send_request("session/new", params)
         if "error" in res:
             raise Exception(f"Failed to create session: {res['error']}")
-        session_id = res["result"]["sessionId"]
+        result = res.get("result", {})
+        session_id = result["sessionId"]
         self.session_queues[session_id] = asyncio.Queue()
+
+        models_data = result.get("models")
+        if isinstance(models_data, dict):
+            current_model = models_data.get(
+                "currentModelId") or models_data.get("currentModel")
+            available_models = models_data.get("availableModels", [])
+            model_info = {
+                "current_model": current_model,
+                "available_models": available_models
+            }
+            self.session_models[session_id] = model_info
+            self.last_known_models = model_info
+
         return session_id
+
+    async def set_model(self, session_id: str, model_id: str) -> dict:
+        """Sets the active model for a session in the agent ACP."""
+        await self.ensure_running()
+        res = await self.send_request("session/set_model", {
+            "sessionId": session_id,
+            "modelId": model_id
+        })
+        if "error" in res:
+            raise Exception(f"Failed to set model: {res['error']}")
+        if session_id in self.session_models:
+            self.session_models[session_id]["current_model"] = model_id
+        else:
+            avail = self.last_known_models.get(
+                "available_models", []) if self.last_known_models else []
+            self.session_models[session_id] = {
+                "current_model": model_id,
+                "available_models": avail
+            }
+        if self.last_known_models:
+            self.last_known_models["current_model"] = model_id
+        return res.get("result", {})
+
+    def get_models(
+            self, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Returns model metadata for a given session, or last known models."""
+        if session_id and session_id in self.session_models:
+            return self.session_models[session_id]
+        return self.last_known_models
 
     async def prompt(self, session_id: str,
                      text: str) -> AsyncGenerator[Dict[str, Any], None]:

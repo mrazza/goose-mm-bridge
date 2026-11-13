@@ -18,24 +18,24 @@ def test_config_approved_users():
         config = Config(approved_users=None)
         assert config.approved_users == ["user1", "user2"]
 
+
 def test_config_admin_users():
     with patch.dict(os.environ, {"ADMIN_USERS": "admin1, admin2"}):
         config = Config(admin_users=None)
         assert config.admin_users == ["admin1", "admin2"]
 
+
 def test_config_initialization():
-    config = Config(
-        mattermost_url="test.com",
-        mattermost_token="secret",
-        mattermost_scheme="http",
-        mattermost_port="80",
-        poll_interval=5,
-        debug=True,
-        rpc_timeout=30,
-        max_sessions=10,
-        require_user_mapping=True,
-        mcp_enabled=False
-    )
+    config = Config(mattermost_url="test.com",
+                    mattermost_token="secret",
+                    mattermost_scheme="http",
+                    mattermost_port="80",
+                    poll_interval=5,
+                    debug=True,
+                    rpc_timeout=30,
+                    max_sessions=10,
+                    require_user_mapping=True,
+                    mcp_enabled=False)
     assert config.mattermost_url == "test.com"
     assert config.mattermost_token == "secret"
     assert config.mattermost_scheme == "http"
@@ -47,10 +47,12 @@ def test_config_initialization():
     assert config.require_user_mapping is True
     assert config.mcp_enabled is False
 
+
 def test_config_approved_users_empty():
     with patch.dict(os.environ, {"APPROVED_USERS": ""}):
         config = Config(approved_users=None)
         assert config.approved_users == []
+
 
 def test_config_goose_extensions_and_mcps():
     env = {
@@ -63,11 +65,9 @@ def test_config_goose_extensions_and_mcps():
         assert len(config.goose_mcp_servers) == 1
         assert config.goose_mcp_servers[0]["name"] == "test"
 
+
 def test_config_goose_env_vars():
-    env = {
-        "GOOSE_PROVIDER": "openai",
-        "OPENAI_API_KEY": "sk-test"
-    }
+    env = {"GOOSE_PROVIDER": "openai", "OPENAI_API_KEY": "sk-test"}
     with patch.dict(os.environ, env):
         config = Config(goose_provider=None, goose_openai_api_key=None)
         assert config.goose_provider == "openai"
@@ -95,8 +95,7 @@ def test_load_user_config_with_file(tmp_path):
         "DEBUG=true\n"
         "GOOSE_BUILTIN_EXTENSIONS=developer,web_scrape\n"
         "GOOSE_MCP_SERVERS=[{\"name\": \"user-mcp\", \"type\": \"stdio\"}]\n"
-        "CUSTOM_VAR=custom_val\n"
-    )
+        "CUSTOM_VAR=custom_val\n")
 
     config = Config()
     config.user_configs_dir = str(user_dir)
@@ -122,23 +121,25 @@ def test_load_user_config_with_file(tmp_path):
     }
 
 
-
 def test_config_hermes_env_vars():
     env = {
-        "HERMES_PROVIDER": "openrouter",
-        "HERMES_MODEL": "nousresearch/hermes-3-llama-3.1-405b",
-        "HERMES_INFERENCE_PROVIDER": "together",
-        "HERMES_INFERENCE_MODEL": "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo",
-        "HERMES_YOLO_MODE": "true"
+        "HERMES_PROVIDER":
+            "openrouter",
+        "HERMES_MODEL":
+            "nousresearch/hermes-3-llama-3.1-405b",
+        "HERMES_INFERENCE_PROVIDER":
+            "together",
+        "HERMES_INFERENCE_MODEL":
+            "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo",
+        "HERMES_YOLO_MODE":
+            "true"
     }
     with patch.dict(os.environ, env):
-        config = Config(
-            hermes_provider=None,
-            hermes_model=None,
-            hermes_inference_provider=None,
-            hermes_inference_model=None,
-            hermes_yolo_mode=None
-        )
+        config = Config(hermes_provider=None,
+                        hermes_model=None,
+                        hermes_inference_provider=None,
+                        hermes_inference_model=None,
+                        hermes_yolo_mode=None)
         assert config.hermes_provider == "openrouter"
         assert config.hermes_model == "nousresearch/hermes-3-llama-3.1-405b"
         assert config.hermes_inference_provider == "together"
@@ -149,10 +150,7 @@ def test_config_hermes_env_vars():
 def test_config_thinking_trace_env_vars():
     import importlib
     import config
-    env = {
-        "THINKING_TRACE": "false",
-        "THINKING_TRACE_SIMPLIFIED": "false"
-    }
+    env = {"THINKING_TRACE": "false", "THINKING_TRACE_SIMPLIFIED": "false"}
     with patch.dict(os.environ, env):
         importlib.reload(config)
         cfg = config.Config()
@@ -166,11 +164,9 @@ def test_load_user_config_with_hermes(tmp_path):
     user_dir = tmp_path / "user_configs"
     user_dir.mkdir()
     user_file = user_dir / "hermes_user.env"
-    user_file.write_text(
-        "HERMES_PROVIDER=openrouter\n"
-        "HERMES_MODEL=nousresearch/hermes-3-llama-3.1-405b\n"
-        "THINKING_TRACE=false\n"
-    )
+    user_file.write_text("HERMES_PROVIDER=openrouter\n"
+                         "HERMES_MODEL=nousresearch/hermes-3-llama-3.1-405b\n"
+                         "THINKING_TRACE=false\n")
 
     config = Config()
     config.user_configs_dir = str(user_dir)
@@ -193,10 +189,9 @@ def test_config_prewarm_env():
         "PREWARM_USERS": "alice:hermes,bob:goose"
     }
     with patch.dict(os.environ, env):
-        config = Config(
-            prewarm_config_file=os.getenv("PREWARM_CONFIG_FILE", ""),
-            prewarm_users=os.getenv("PREWARM_USERS")
-        )
+        config = Config(prewarm_config_file=os.getenv("PREWARM_CONFIG_FILE",
+                                                      ""),
+                        prewarm_users=os.getenv("PREWARM_USERS"))
         assert config.prewarm_config_file == "custom_prewarm.json"
         assert config.prewarm_users == "alice:hermes,bob:goose"
 
@@ -206,10 +201,8 @@ def test_load_user_config_with_prewarm(tmp_path):
     user_dir = tmp_path / "user_configs"
     user_dir.mkdir()
     user_file = user_dir / "user.env"
-    user_file.write_text(
-        "PREWARM_CONFIG_FILE=user_prewarm.json\n"
-        "PREWARM_USERS=user:hermes\n"
-    )
+    user_file.write_text("PREWARM_CONFIG_FILE=user_prewarm.json\n"
+                         "PREWARM_USERS=user:hermes\n")
 
     config = Config()
     config.user_configs_dir = str(user_dir)
@@ -218,3 +211,37 @@ def test_load_user_config_with_prewarm(tmp_path):
     assert loaded.prewarm_config_file == "user_prewarm.json"
     assert loaded.prewarm_users == "user:hermes"
 
+
+def test_config_model_control_defaults():
+    config = Config()
+    assert config.allow_model_control is True
+    assert config.model_control_users is None
+
+
+def test_config_model_control_env():
+    env = {
+        "ALLOW_MODEL_CONTROL": "false",
+        "MODEL_CONTROL_USERS": "user1, user2"
+    }
+    with patch.dict(os.environ, env):
+        config = Config(allow_model_control=os.getenv("ALLOW_MODEL_CONTROL",
+                                                      "true").lower() == "true",
+                        model_control_users=None)
+        assert config.allow_model_control is False
+        assert config.model_control_users == ["user1", "user2"]
+
+
+def test_load_user_config_with_model_control(tmp_path):
+    from config import load_user_config
+    user_dir = tmp_path / "user_configs"
+    user_dir.mkdir()
+    user_file = user_dir / "locked_user.env"
+    user_file.write_text("ALLOW_MODEL_CONTROL=false\n"
+                         "MODEL_CONTROL_USERS=admin1,admin2\n")
+
+    config = Config()
+    config.user_configs_dir = str(user_dir)
+    loaded = load_user_config("locked_user", config)
+
+    assert loaded.allow_model_control is False
+    assert loaded.model_control_users == ["admin1", "admin2"]

@@ -426,6 +426,8 @@ class MattermostBridge:
 
         for client in self.agent_clients.values():
             client.session_queues.clear()
+            if hasattr(client, "session_models"):
+                client.session_models.clear()
         self.sessions.clear()
         self.session_locks.clear()
 
@@ -634,6 +636,9 @@ class MattermostBridge:
                 client = self.agent_clients[(target_linux_user, old_agent)]
                 if sid in client.session_queues:
                     del client.session_queues[sid]
+                if hasattr(client,
+                           "session_models") and sid in client.session_models:
+                    del client.session_models[sid]
                 asyncio.create_task(
                     client.send_request("session/close", {"sessionId": sid}))
 
@@ -645,6 +650,7 @@ class MattermostBridge:
             "id": None,  # will be created on the next message
             "linux_user": None,  # resolved on next message
             "agent_name": target_agent,
+            "model_name": None,  # reset model when switching agents
             "processed_count": 0,
             "had_catchup_hint": False
         }
@@ -653,6 +659,194 @@ class MattermostBridge:
             cid,
             f"🔄 *Switched agent for this thread to `{target_agent}`. The next message will start a fresh session.*",
             root_id=root_id)
+
+    async def _handle_model_command(self, post: dict, cleaned_msg: str):
+        """Handles the !model and !models commands to view or switch models in a thread."""
+        sender_id = post["user_id"]
+        cid = post["channel_id"]
+        root_id = post.get("root_id") or post["id"]
+
+        eff_id = sender_id
+        if sender_id in self.impersonations:
+            eff_id = self.impersonations[sender_id]["id"]
+            eff_username = self.impersonations[sender_id]["username"]
+        else:
+            user_info = await self.api.get_user(sender_id)
+            eff_username = user_info.get("username") if user_info else sender_id
+
+        # Linux user resolution
+        user_mapping = load_user_mapping(self.config.user_mapping_file)
+        linux_user = user_mapping.get(eff_id) or user_mapping.get(eff_username)
+
+        from config import load_user_config
+        user_config = load_user_config(
+            linux_user, self.config) if linux_user else self.config
+
+        # Check permissions
+        can_control = True
+        if not getattr(user_config, "allow_model_control", True):
+            can_control = False
+        elif getattr(user_config, "model_control_users", None) is not None:
+            allowed = user_config.model_control_users
+            if allowed is not None and (eff_id not in allowed and
+                                        eff_username not in allowed):
+                can_control = False
+
+        session_key = get_session_key(eff_id, root_id)
+
+        # Parse command
+        is_query = cleaned_msg.strip().lower() == "!models"
+        parts = cleaned_msg.split(maxsplit=1)
+        if len(parts) < 2:
+            is_query = True
+
+        # Resolve agent
+        if session_key in self.sessions:
+            agent_name = self.sessions[session_key].get(
+                "agent_name") or self._get_user_default_agent(eff_id)
+        else:
+            agent_name = self._get_user_default_agent(eff_id)
+
+        if agent_name not in self.config.agents:
+            agent_name = self.config.default_agent
+
+        client_key = (linux_user, agent_name)
+        if client_key not in self.agent_clients:
+            self.agent_clients[client_key] = self.agent_client_factory(
+                linux_user, agent_name)
+        client = self.agent_clients[client_key]
+
+        if is_query:
+            # Query active & available models
+            has_active_session = (session_key in self.sessions and
+                                  self.sessions[session_key].get("id")
+                                  is not None)
+            sid = self.sessions[session_key][
+                "id"] if has_active_session else None
+            models_info = client.get_models(sid) if hasattr(
+                client, "get_models") else None
+
+            current_model = None
+            if models_info and models_info.get("current_model"):
+                current_model = models_info["current_model"]
+            elif session_key in self.sessions and self.sessions[
+                    session_key].get("model_name"):
+                current_model = self.sessions[session_key]["model_name"]
+            else:
+                # Default configured model for the agent
+                if agent_name == "hermes":
+                    current_model = getattr(
+                        user_config, "hermes_model", None) or getattr(
+                            user_config, "hermes_inference_model", None)
+                elif agent_name == "goose":
+                    current_model = getattr(user_config, "goose_model", None)
+                else:
+                    agent_def = user_config.agents.get(agent_name, {})
+                    agent_env = agent_def.get("env", {})
+                    current_model = agent_env.get("MODEL") or agent_env.get(
+                        f"{agent_name.upper()}_MODEL")
+
+            available_models = models_info.get("available_models",
+                                               []) if models_info else []
+
+            # Format status
+            if not can_control:
+                status_desc = "locked by administrator"
+            elif has_active_session:
+                status_desc = "active in thread"
+            elif session_key in self.sessions and self.sessions[
+                    session_key].get("model_name"):
+                status_desc = "staged for next session"
+            else:
+                status_desc = "default from environment"
+
+            display_model = f"`{current_model}`" if current_model else "*(not configured)*"
+            msg = f"🤖 **Model Status**\n- Current model: {display_model} (*{status_desc}*)\n"
+
+            if available_models:
+                msg += "\n**Available Models**\n"
+                for m in available_models:
+                    if isinstance(m, dict):
+                        m_id = m.get("id") or m.get("modelId") or m.get("name")
+                        m_name = m.get("name")
+                        m_desc = m.get("description")
+                        active_flag = " (*active*)" if m_id == current_model else ""
+                        extra = ""
+                        if m_name and m_name != m_id:
+                            extra += f": {m_name}"
+                        if m_desc and m_desc != m_name:
+                            extra += f" - {m_desc}"
+                        msg += f"- `{m_id}`{extra}{active_flag}\n"
+                    else:
+                        active_flag = " (*active*)" if m == current_model else ""
+                        msg += f"- `{m}`{active_flag}\n"
+
+            await self.api.create_post(cid, msg, root_id=root_id)
+            return
+
+        # Target model switch
+        target_model = parts[1].strip()
+
+        # Permission check
+        if not can_control:
+            await self.api.create_post(
+                cid,
+                "⚠️ *Permission denied: Model switching is disabled for your account. You are locked to your configured model.*",
+                root_id=root_id)
+            return
+
+        # Validate target model if available_models is known
+        has_active_session = (session_key in self.sessions and
+                              self.sessions[session_key].get("id") is not None)
+        sid = self.sessions[session_key]["id"] if has_active_session else None
+        models_info = client.get_models(sid) if hasattr(client,
+                                                        "get_models") else None
+        if models_info and models_info.get("available_models"):
+            known_ids = set()
+            for m in models_info["available_models"]:
+                if isinstance(m, dict):
+                    mid = m.get("id") or m.get("modelId") or m.get("name")
+                    if mid:
+                        known_ids.add(mid)
+                elif isinstance(m, str):
+                    known_ids.add(m)
+            if known_ids and target_model not in known_ids:
+                await self.api.create_post(
+                    cid,
+                    f"⚠️ *Unknown model `{target_model}`. Use `!model` to see available models.*",
+                    root_id=root_id)
+                return
+
+        if has_active_session and sid:
+            try:
+                await client.set_model(sid, target_model)
+                self.sessions[session_key]["model_name"] = target_model
+                await self.api.create_post(
+                    cid,
+                    f"🔄 *Switched model for this thread to `{target_model}`.*",
+                    root_id=root_id)
+            except Exception as e:
+                await self.api.create_post(
+                    cid,
+                    f"⚠️ *Failed to switch model to `{target_model}`: {e}*",
+                    root_id=root_id)
+        else:
+            if session_key not in self.sessions:
+                self.sessions[session_key] = {
+                    "id": None,
+                    "linux_user": None,
+                    "agent_name": None,
+                    "model_name": target_model,
+                    "processed_count": 0,
+                    "had_catchup_hint": False
+                }
+            else:
+                self.sessions[session_key]["model_name"] = target_model
+
+            await self.api.create_post(
+                cid,
+                f"🎯 *Model set to `{target_model}` for this thread. It will apply when the session begins.*",
+                root_id=root_id)
 
     async def _prune_sessions(self):
         """Prunes old sessions if the count exceeds MAX_SESSIONS."""
@@ -676,6 +870,9 @@ class MattermostBridge:
                 client = self.agent_clients[client_key]
                 if sid in client.session_queues:
                     del client.session_queues[sid]
+                if hasattr(client,
+                           "session_models") and sid in client.session_models:
+                    del client.session_models[sid]
                 asyncio.create_task(
                     client.send_request("session/close", {"sessionId": sid}))
 
@@ -829,11 +1026,21 @@ class MattermostBridge:
                         f"[{datetime.now()}] Creating new Agent '{agent_name}' session for {session_key}"
                     )
 
+                    target_model = self.sessions.get(session_key,
+                                                     {}).get("model_name")
                     sid = await client.create_session()
+                    if target_model:
+                        try:
+                            await client.set_model(sid, target_model)
+                        except Exception as e:
+                            print(
+                                f"[{datetime.now()}] Error applying staged model {target_model}: {e}"
+                            )
                     self.sessions[session_key] = {
                         "id": sid,
                         "linux_user": linux_user,
                         "agent_name": agent_name,
+                        "model_name": target_model,
                         "processed_count": 0,
                         # We mark the catchup hint to true so we clarify in a new thread whether
                         # any messages were missed.
@@ -887,10 +1094,20 @@ class MattermostBridge:
                         f"🔄 *Notice: Connection to {agent_display} was reset. I am starting a fresh session for this thread.*",
                         root_id=root_id,
                     )
+                    prev_model = session_data.get("model_name")
+                    retry_sid = await client.create_session()
+                    if prev_model:
+                        try:
+                            await client.set_model(retry_sid, prev_model)
+                        except Exception as e:
+                            print(
+                                f"[{datetime.now()}] Error re-applying model {prev_model} on retry: {e}"
+                            )
                     self.sessions[session_key] = {
-                        "id": await client.create_session(),
+                        "id": retry_sid,
                         "linux_user": linux_user,
                         "agent_name": agent_name,
+                        "model_name": prev_model,
                         "processed_count": 0,
                         "had_catchup_hint": False
                     }
@@ -971,6 +1188,12 @@ class MattermostBridge:
         # Special Command: !agent
         if cleaned_msg.lower().startswith("!agent"):
             await self._handle_agent_command(post, cleaned_msg)
+            return
+
+        # Special Command: !models / !model
+        if cleaned_msg.strip().lower() == "!models" or cleaned_msg.lower(
+        ).startswith("!model"):
+            await self._handle_model_command(post, cleaned_msg)
             return
 
         # Check if we should respond
