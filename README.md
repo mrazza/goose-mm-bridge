@@ -189,6 +189,8 @@ The bridge supports specific commands that can be typed directly into the Matter
 - **`!agents`**: Lists all available configured agents (e.g., `goose`, `hermes`), indicating which one is active in the current thread and which one is your persistent default.
 - **`!agent <name>`**: Switches the agent used for the current conversation thread to `<name>`. If `<name>` is omitted, shows the active agent for the current thread.
 - **`!agent-default <name>`**: Sets `<name>` as your persistent default agent for all new threads. If `<name>` is omitted, shows your current default agent.
+- **`!models` / `!model`**: Lists available models from the ACP agent and displays the currently active model for the thread.
+- **`!model <name>`**: Switches the active model for the current thread to `<name>` (or stages it for the next session if none is active). Permission can be controlled globally via `ALLOW_MODEL_CONTROL` / `MODEL_CONTROL_USERS` or per-user in `user_configs/<user>.env`.
 - **`!impersonate <username | user_id>`**: Allows administrators (configured in `ADMIN_USERS`) to operate as other users.
   - To impersonate: `!impersonate @username` or `!impersonate user_id`.
   - All subsequent prompts will execute under the target user's context (including Linux user mappings, dynamic configuration overrides, and thread histories).
