@@ -341,10 +341,10 @@ class ACPClient:
             available_models = models_data.get("availableModels", [])
             model_info = {
                 "current_model": current_model,
-                "available_models": available_models
+                "available_models": list(available_models)
             }
-            self.session_models[session_id] = model_info
-            self.last_known_models = model_info
+            self.session_models[session_id] = dict(model_info)
+            self.last_known_models = dict(model_info)
 
         return session_id
 
@@ -364,10 +364,8 @@ class ACPClient:
                 "available_models", []) if self.last_known_models else []
             self.session_models[session_id] = {
                 "current_model": model_id,
-                "available_models": avail
+                "available_models": list(avail)
             }
-        if self.last_known_models:
-            self.last_known_models["current_model"] = model_id
         return res.get("result", {})
 
     def get_models(

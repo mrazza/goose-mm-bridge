@@ -245,3 +245,17 @@ def test_load_user_config_with_model_control(tmp_path):
 
     assert loaded.allow_model_control is False
     assert loaded.model_control_users == ["admin1", "admin2"]
+
+
+def test_load_user_config_empty_model_control_users(tmp_path):
+    from config import load_user_config
+    user_dir = tmp_path / "user_configs"
+    user_dir.mkdir()
+    user_file = user_dir / "user.env"
+    user_file.write_text("MODEL_CONTROL_USERS=\n")
+
+    config = Config()
+    config.user_configs_dir = str(user_dir)
+    loaded = load_user_config("user", config)
+
+    assert loaded.model_control_users is None
