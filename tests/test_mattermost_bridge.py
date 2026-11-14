@@ -2107,3 +2107,145 @@ async def test_handle_message_retry_preserves_model(config, mock_api,
     mock_goose_client.set_model.assert_any_await("s_initial", "persisted-model")
     mock_goose_client.set_model.assert_any_await("s_retry", "persisted-model")
     assert bridge.sessions["u1:p1"]["model_name"] == "persisted-model"
+
+
+@pytest.mark.asyncio
+async def test_handle_message_staged_model_failure_notifies_and_resets(
+        config, mock_api, mock_goose_client):
+    mock_goose_client.set_model = AsyncMock(
+        side_effect=RuntimeError("Model not found"))
+    mock_goose_client.create_session = AsyncMock(return_value="s101")
+    factory = lambda u, a=None: mock_goose_client
+    bridge = MattermostBridge(api=mock_api,
+                              config=config,
+                              goose_client_factory=factory)
+    bridge.bot_mention = "@bot"
+    bridge.config.approved_users = []
+    bridge.sessions["u1:p1"] = {
+        "id": None,
+        "linux_user": "l1",
+        "agent_name": "goose",
+        "model_name": "bad-model",
+        "processed_count": 0,
+        "had_catchup_hint": False
+    }
+
+    post = {
+        "id": "p1",
+        "user_id": "u1",
+        "channel_id": "c1",
+        "message": "@bot hello",
+        "create_at": 1000
+    }
+    with patch('mattermost_bridge.load_user_mapping',
+               return_value={"u1": "l1"}):
+        await bridge._process_post(post, {"c1": {"type": "D"}})
+        await wait_for_bridge(bridge)
+
+    assert bridge.sessions["u1:p1"]["model_name"] is None
+    error_posts = [
+        call.args[1]
+        for call in mock_api.create_post.call_args_list
+        if "Failed to apply staged model `bad-model`" in call.args[1]
+    ]
+    assert len(error_posts) == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_model_query_no_session_does_not_leak_cross_thread_model(
+        config, mock_api):
+    config.goose_model = "claude-3-5-sonnet"
+    mock_client = MagicMock()
+    # Another thread/session left its model in last_known_models
+    mock_client.get_models = MagicMock(
+        return_value={
+            "current_model": "other-session-model",
+            "available_models": ["model-a", "model-b"]
+        })
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.agent_clients[(None, "goose")] = mock_client
+
+    post = {
+        "user_id": "u1",
+        "channel_id": "c1",
+        "root_id": "root1",
+        "message": "!model"
+    }
+    await bridge._handle_model_command(post, "!model")
+
+    assert mock_api.create_post.called
+    msg = mock_api.create_post.call_args[0][1]
+    assert "`claude-3-5-sonnet`" in msg
+    assert "default from environment" in msg
+    assert "other-session-model" not in msg
+
+
+@pytest.mark.asyncio
+async def test_models_with_argument_treated_as_query(config, mock_api):
+    mock_client = MagicMock()
+    mock_client.get_models = MagicMock(
+        return_value={
+            "current_model": "active-model",
+            "available_models": ["active-model", "other-model"]
+        })
+    mock_client.set_model = AsyncMock()
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.agent_clients[(None, "goose")] = mock_client
+    bridge.sessions["u1:root1"] = {
+        "id": "s1",
+        "linux_user": None,
+        "agent_name": "goose"
+    }
+
+    post = {
+        "user_id": "u1",
+        "channel_id": "c1",
+        "root_id": "root1",
+        "message": "!models some_arg"
+    }
+    await bridge._handle_model_command(post, "!models some_arg")
+
+    mock_client.set_model.assert_not_called()
+    assert mock_api.create_post.called
+    msg = mock_api.create_post.call_args[0][1]
+    assert "Model Status" in msg
+
+
+@pytest.mark.asyncio
+async def test_process_post_model_unapproved_user_blocked(config, mock_api):
+    config.approved_users = ["allowed_user"]
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.bot_mention = "@bot"
+    bridge._handle_model_command = AsyncMock()
+
+    post = {
+        "id": "p1",
+        "user_id": "unapproved_u",
+        "channel_id": "c1",
+        "message": "!model gpt-4o",
+        "create_at": 1000
+    }
+    mock_api.get_user = AsyncMock(return_value={"username": "unapproved_user"})
+
+    await bridge._process_post(post, {"c1": {"type": "D"}})
+
+    bridge._handle_model_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_process_post_modeling_word_not_intercepted(config, mock_api):
+    bridge = MattermostBridge(api=mock_api, config=config)
+    bridge.bot_mention = "@bot"
+    bridge._handle_model_command = AsyncMock()
+
+    post = {
+        "id": "p1",
+        "user_id": "u1",
+        "channel_id": "c1",
+        "message": "!modeling something",
+        "create_at": 1000
+    }
+
+    await bridge._process_post(post, {"c1": {"type": "O"}})
+
+    bridge._handle_model_command.assert_not_called()

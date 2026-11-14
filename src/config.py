@@ -172,6 +172,11 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
     def parse_list(v: str) -> List[str]:
         return [x.strip() for x in v.split(",") if x.strip()]
 
+    # Helper to parse optional list of strings (returns None if empty)
+    def parse_optional_list(v: str) -> Optional[List[str]]:
+        items = [x.strip() for x in v.split(",") if x.strip()]
+        return items if items else None
+
     # Helper to parse JSON
     def parse_json(v: str):
         try:
@@ -222,7 +227,7 @@ def load_user_config(linux_user: str, base_config: Config) -> Config:
         "PREWARM_CONFIG_FILE": ("prewarm_config_file", str),
         "PREWARM_USERS": ("prewarm_users", str),
         "ALLOW_MODEL_CONTROL": ("allow_model_control", parse_bool),
-        "MODEL_CONTROL_USERS": ("model_control_users", parse_list),
+        "MODEL_CONTROL_USERS": ("model_control_users", parse_optional_list),
     }
 
     for env_key, val in user_env.items():

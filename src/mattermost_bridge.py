@@ -695,10 +695,9 @@ class MattermostBridge:
         session_key = get_session_key(eff_id, root_id)
 
         # Parse command
-        is_query = cleaned_msg.strip().lower() == "!models"
-        parts = cleaned_msg.split(maxsplit=1)
-        if len(parts) < 2:
-            is_query = True
+        tokens = cleaned_msg.strip().split(maxsplit=1)
+        cmd = tokens[0].lower() if tokens else ""
+        is_query = (cmd == "!models") or (len(tokens) < 2)
 
         # Resolve agent
         if session_key in self.sessions:
@@ -727,12 +726,17 @@ class MattermostBridge:
                 client, "get_models") else None
 
             current_model = None
-            if models_info and models_info.get("current_model"):
-                current_model = models_info["current_model"]
+            if has_active_session:
+                if models_info and models_info.get("current_model"):
+                    current_model = models_info["current_model"]
+                elif session_key in self.sessions and self.sessions[
+                        session_key].get("model_name"):
+                    current_model = self.sessions[session_key]["model_name"]
             elif session_key in self.sessions and self.sessions[
                     session_key].get("model_name"):
                 current_model = self.sessions[session_key]["model_name"]
-            else:
+
+            if not current_model:
                 # Default configured model for the agent
                 if agent_name == "hermes":
                     current_model = getattr(
@@ -785,7 +789,7 @@ class MattermostBridge:
             return
 
         # Target model switch
-        target_model = parts[1].strip()
+        target_model = tokens[1].strip()
 
         # Permission check
         if not can_control:
@@ -1028,6 +1032,7 @@ class MattermostBridge:
 
                     target_model = self.sessions.get(session_key,
                                                      {}).get("model_name")
+                    actual_model = target_model
                     sid = await client.create_session()
                     if target_model:
                         try:
@@ -1036,11 +1041,16 @@ class MattermostBridge:
                             print(
                                 f"[{datetime.now()}] Error applying staged model {target_model}: {e}"
                             )
+                            await self.api.create_post(
+                                channel_id,
+                                f"⚠️ *Failed to apply staged model `{target_model}`: {e}. Falling back to default model.*",
+                                root_id=root_id)
+                            actual_model = None
                     self.sessions[session_key] = {
                         "id": sid,
                         "linux_user": linux_user,
                         "agent_name": agent_name,
-                        "model_name": target_model,
+                        "model_name": actual_model,
                         "processed_count": 0,
                         # We mark the catchup hint to true so we clarify in a new thread whether
                         # any messages were missed.
@@ -1191,8 +1201,18 @@ class MattermostBridge:
             return
 
         # Special Command: !models / !model
-        if cleaned_msg.strip().lower() == "!models" or cleaned_msg.lower(
-        ).startswith("!model"):
+        tokens = cleaned_msg.strip().split(maxsplit=1)
+        first_token = tokens[0].lower() if tokens else ""
+        if first_token in ("!model", "!models"):
+            if self.config.approved_users:
+                user_info = await self.api.get_user(sender_id)
+                username = user_info.get("username") if user_info else "unknown"
+                if sender_id not in self.config.approved_users and username not in self.config.approved_users:
+                    if self.config.debug:
+                        print(
+                            f"[{datetime.now()}] Ignoring model command from unapproved user: {username} ({sender_id})"
+                        )
+                    return
             await self._handle_model_command(post, cleaned_msg)
             return
 

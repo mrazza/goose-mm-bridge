@@ -852,6 +852,7 @@ async def test_create_session_with_models(client):
         assert models["current_model"] == "claude-3-5-sonnet"
         assert len(models["available_models"]) == 2
         assert client.last_known_models == models
+        assert client.last_known_models is not client.session_models[sid]
 
 
 @pytest.mark.asyncio
@@ -860,7 +861,10 @@ async def test_set_model_success(client):
         "current_model": "old-model",
         "available_models": ["old-model", "new-model"]
     }
-    client.last_known_models = client.session_models["s1"]
+    client.last_known_models = {
+        "current_model": "default-model",
+        "available_models": ["old-model", "new-model"]
+    }
 
     with patch.object(client, 'ensure_running', new_callable=AsyncMock),\
          patch.object(client, 'send_request', new_callable=AsyncMock) as mock_request:
@@ -873,7 +877,7 @@ async def test_set_model_success(client):
             "modelId": "new-model"
         })
         assert client.session_models["s1"]["current_model"] == "new-model"
-        assert client.last_known_models["current_model"] == "new-model"
+        assert client.last_known_models["current_model"] == "default-model"
 
 
 @pytest.mark.asyncio
