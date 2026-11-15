@@ -5,2247 +5,255 @@ from unittest.mock import patch
 
 import pytest
 
+from channel_cache import ChannelCache
 from config import Config
 from mattermost_bridge import MattermostBridge
 
 
 @pytest.fixture
-def config():
-    return Config(mattermost_url="example.com", mattermost_token="token")
+def config(tmp_path):
+    return Config(
+        mattermost_url="example.com",
+        mattermost_token="token",
+        approved_users=[],
+        poll_interval=0.01,
+        debug=True,
+        max_sessions=5,
+        user_mapping_file=str(tmp_path / "missing_mapping.json"),
+        user_agent_preferences_file=str(tmp_path / "prefs.json"),
+        prewarm_config_file=str(tmp_path / "missing_prewarm.json"),
+    )
 
 
 @pytest.fixture
 def mock_api():
     api = MagicMock()
-    api.get_me = AsyncMock(return_value={"id": "bot_id", "username": "bot"})
-    api.create_post = AsyncMock(return_value={"id": "post_id"})
+    api.get_me = AsyncMock(return_value={
+        "id": "bot_id",
+        "username": "goose-bot"
+    })
+    api.get_direct_channels = AsyncMock(return_value=[{
+        "id": "dm_1",
+        "type": "D"
+    }])
+    api.get_my_teams = AsyncMock(return_value=[{"id": "team_1"}])
+    api.get_my_channels = AsyncMock(return_value=[{
+        "id": "chan_1",
+        "type": "O"
+    }])
+    api.get_channel_posts = AsyncMock(return_value={"posts": {}, "order": []})
+    api.create_post = AsyncMock(return_value={"id": "post_1"})
     api.update_post = AsyncMock()
-    api.get_user = AsyncMock(return_value={"username": "user1"})
     api.get_thread = AsyncMock(return_value={"posts": {}})
-    api.search_users = AsyncMock(return_value=[])
+    api.get_user = AsyncMock(return_value={"id": "u1", "username": "alice"})
     return api
 
 
-@pytest.fixture
-def mock_goose_client():
-    client = MagicMock()
-    client.create_session = AsyncMock(return_value="session_1")
-    client.send_request = AsyncMock(return_value={})
-
-    # We'll use a mock that tracks calls
-    client.prompt = MagicMock()
-
-    async def mock_prompt_gen(sid, msg):
-        yield {"type": "thinking", "text": "let me see"}
-        yield {"type": "content", "text": "the answer is 42"}
-        yield {"type": "final", "text": "the answer is 42"}
-
-    client.prompt.side_effect = mock_prompt_gen
-    return client
-
-
-async def wait_for_bridge(bridge):
-    """Wait for all background tasks in the bridge to complete."""
-    while bridge.background_tasks:
-        await asyncio.gather(*list(bridge.background_tasks),
-                             return_exceptions=True)
-    # Give a tiny bit more time for any final processing
-    await asyncio.sleep(0)
-
-
 @pytest.mark.asyncio
-async def test_bridge_initialization(config, mock_api):
+async def test_bridge_initialization_success_and_failure(config, mock_api):
     bridge = MattermostBridge(api=mock_api, config=config)
-    success = await bridge.initialize()
-
-    assert success is True
+    ok = await bridge.initialize()
+    assert ok is True
     assert bridge.bot_id == "bot_id"
-    assert bridge.bot_mention == "@bot"
+    assert bridge.bot_username == "goose-bot"
+    assert bridge.bot_mention == "@goose-bot"
+    assert bridge.pipeline.bot_mention == "@goose-bot"
 
-
-@pytest.mark.asyncio
-async def test_catchup_flow_new_session(config, mock_api, mock_goose_client):
-    factory = lambda user: mock_goose_client
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=factory)
-    bridge.bot_mention = "@bot"
-    bridge.config.approved_users = []  # Approve all
-
-    # Mock history: thread has 5 messages already
-    mock_api.get_thread = AsyncMock(
-        return_value={
-            "posts": {
-                f"p{i}": {
-                    "id": f"p{i}",
-                    "user_id": "u1",
-                    "message": "msg"
-                } for i in range(1, 6)
-            }
-        })
-
-    # Message p5 is the one we are processing
-    post = {
-        "id": "p5",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "@bot hello"
-    }
-
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"u1": "linux1"}):
-        await bridge._process_post(post, {"c1": {"type": "O"}})
-        await wait_for_bridge(bridge)
-
-        args, kwargs = mock_goose_client.prompt.call_args
-        prompt_text = args[1]
-        assert "SYSTEM: You have joined an existing thread with 4 earlier messages." in prompt_text
-
-
-@pytest.mark.asyncio
-async def test_catchup_flow_existing_session(config, mock_api,
-                                             mock_goose_client):
-    factory = lambda user: mock_goose_client
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=factory)
-    bridge.bot_mention = "@bot"
-    bridge.config.approved_users = []  # Approve all
-
-    # 1. First message to establish session
-    mock_api.get_thread = AsyncMock(
-        return_value={"posts": {
-            "p1": {
-                "id": "p1"
-            }
-        }})
-    p1 = {
-        "id": "p1",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "@bot m1"
-    }
-
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"u1": "linux1"}):
-        await bridge._process_post(p1, {"c1": {"type": "O"}})
-        await wait_for_bridge(bridge)
-
-        # 2. Simulate 3 messages arriving that the bot doesn't respond to (not mentioned)
-        for i in range(2, 5):
-            await bridge._process_post(
-                {
-                    "id": f"p{i}",
-                    "user_id": "other",
-                    "channel_id": "c1",
-                    "root_id": "root1",
-                    "message": "unrelated"
-                }, {"c1": {
-                    "type": "O"
-                }})
-
-        # 3. Next message for the bot
-        p5 = {
-            "id": "p5",
-            "user_id": "u1",
-            "channel_id": "c1",
-            "root_id": "root1",
-            "message": "@bot m2"
-        }
-        await bridge._process_post(p5, {"c1": {"type": "O"}})
-        await wait_for_bridge(bridge)
-
-        args, kwargs = mock_goose_client.prompt.call_args
-        prompt_text = args[1]
-        assert "SYSTEM: There are 3 new messages in this thread since your last response." in prompt_text
-
-
-@pytest.mark.asyncio
-async def test_catchup_flow_clearing_signal(config, mock_api,
-                                            mock_goose_client):
-    factory = lambda user: mock_goose_client
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=factory)
-    bridge.bot_mention = "@bot"
-    bridge.config.approved_users = []  # Approve all
-
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"u1": "linux1"}):
-        # 1. Trigger a catch-up hint
-        mock_api.get_thread = AsyncMock(
-            return_value={
-                "posts": {
-                    "p1": {
-                        "user_id": "u1",
-                        "message": "hi"
-                    },
-                    "p2": {
-                        "user_id": "u1",
-                        "message": "hi2"
-                    }
-                }
-            })
-        await bridge._process_post(
-            {
-                "id": "p2",
-                "user_id": "u1",
-                "channel_id": "c1",
-                "root_id": "root1",
-                "message": "@bot hi"
-            }, {"c1": {
-                "type": "O"
-            }})
-        await wait_for_bridge(bridge)
-
-        # Verify it had a hint
-        assert bridge.sessions["u1:root1"]["had_catchup_hint"] is True
-
-        # 2. Next message is perfectly in sync (p3)
-        # We need to make sure thread_counters is updated by process_post
-        await bridge._process_post(
-            {
-                "id": "p3",
-                "user_id": "u1",
-                "channel_id": "c1",
-                "root_id": "root1",
-                "message": "@bot next"
-            }, {"c1": {
-                "type": "O"
-            }})
-        await wait_for_bridge(bridge)
-
-        args, kwargs = mock_goose_client.prompt.call_args
-        prompt_text = args[1]
-        assert "SYSTEM: You are now caught up with the thread." in prompt_text
-        assert bridge.sessions["u1:root1"]["had_catchup_hint"] is False
-
-
-@pytest.mark.asyncio
-async def test_no_catchup_needed_when_synced(config, mock_api,
-                                             mock_goose_client):
-    factory = lambda user: mock_goose_client
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=factory)
-    bridge.bot_mention = "@bot"
-    bridge.config.approved_users = []  # Approve all
-
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"u1": "linux1"}):
-        # First message - history is just this message
-        mock_api.get_thread = AsyncMock(
-            return_value={"posts": {
-                "p1": {
-                    "user_id": "u1",
-                    "message": "hi"
-                }
-            }})
-        await bridge._process_post(
-            {
-                "id": "p1",
-                "user_id": "u1",
-                "channel_id": "c1",
-                "root_id": "root1",
-                "message": "@bot hi"
-            }, {"c1": {
-                "type": "O"
-            }})
-        await wait_for_bridge(bridge)
-
-        args, kwargs = mock_goose_client.prompt.call_args
-        prompt_text = args[1]
-        assert "joined an existing thread" not in prompt_text
-        assert "since your last response" not in prompt_text
-        assert "You are now caught up" in prompt_text
-
-
-@pytest.mark.asyncio
-async def test_session_pruning(config, mock_api, mock_goose_client):
-    config.max_sessions = 2
-    mock_goose_client.send_request = AsyncMock(return_value={})
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-
-    # Fill sessions
-    bridge.sessions = {
-        "user:thread1": {
-            "id": "s1",
-            "linux_user": "u1"
-        },
-        "user:thread2": {
-            "id": "s2",
-            "linux_user": "u1"
-        },
-        "user:thread3": {
-            "id": "s3",
-            "linux_user": "u1"
-        }
-    }
-    bridge.goose_clients["u1"] = mock_goose_client
-
-    await bridge._prune_sessions()
-
-    # Should have pruned max(1, 2//5) = 1
-    assert len(bridge.sessions) == 2
-    assert "user:thread1" not in bridge.sessions
-    assert mock_goose_client.send_request.called
-
-
-@pytest.mark.asyncio
-async def test_handle_stop_command(config, mock_api, mock_goose_client):
-    mock_goose_client.cancel_prompt = AsyncMock(return_value=True)
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-    bridge.sessions["user_id_1:root_1"] = {
-        "id": "session_1",
-        "linux_user": "linux_user"
-    }
-    bridge.goose_clients["linux_user"] = mock_goose_client
-
-    post = {
-        "id": "post_1",
-        "user_id": "user_id_1",
-        "channel_id": "channel_1",
-        "root_id": "root_1",
-        "message": "!stop"
-    }
-
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"user_id_1": "linux_user"}):
-        await bridge._handle_stop_command(post)
-        assert mock_goose_client.cancel_prompt.called
-        assert mock_api.create_post.called
-        assert "cancelled" in mock_api.create_post.call_args[0][1]
-
-
-@pytest.mark.asyncio
-async def test_ignore_own_messages(config, mock_api):
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.bot_id = "bot_id"
-
-    post = {"user_id": "bot_id", "message": "hello"}
-    # Should return early
-    await bridge._process_post(post, {})
-    assert not mock_api.get_user.called
-
-
-@pytest.mark.asyncio
-async def test_ignore_whitespace_only(config, mock_api, mock_goose_client):
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-    bridge.bot_mention = "@bot"
-    bridge.config.approved_users = []  # Approve all
-
-    post = {
-        "id": "p1",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "   ",
-        "create_at": 1000
-    }
-
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"u1": "linux1"}):
-        await bridge._process_post(post, {"c1": {"type": "D"}})
-        await wait_for_bridge(bridge)
-        assert not mock_goose_client.prompt.called
-
-
-@pytest.mark.asyncio
-async def test_handle_message_retry(config, mock_api, mock_goose_client):
-    factory = lambda user: mock_goose_client
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=factory)
-    bridge.bot_mention = "@bot"
-    bridge.config.approved_users = []
-
-    post = {
-        "id": "post_1",
-        "user_id": "user_id_1",
-        "channel_id": "channel_1",
-        "message": "@bot hello",
-        "create_at": 1000
-    }
-
-    # Simulate a failure on first prompt, then success on second
-    call_count = 0
-
-    async def mock_prompt_with_fail(sid, msg):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise RuntimeError("Goose connection lost")
-        yield {"type": "final", "text": "retry success"}
-
-    mock_goose_client.prompt.side_effect = mock_prompt_with_fail
-
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"user_id_1": "linux_user"}):
-        await bridge._process_post(post, {"channel_1": {"type": "D"}})
-        await wait_for_bridge(bridge)
-
-        # Should have called prompt twice
-        assert mock_goose_client.prompt.call_count == 2
-
-        # Second call should have the retry context
-        args, kwargs = mock_goose_client.prompt.call_args
-        prompt_text = args[1]
-        assert "NOTE: The previous session for this thread terminated unexpectedly" in prompt_text
-
-        # Verify we informed the user about the reset
-        reset_post_call = [
-            c for c in mock_api.create_post.call_args_list
-            if "Notice: Connection to Goose was reset" in str(c)
-        ]
-        assert len(reset_post_call) > 0
-
-
-@pytest.mark.asyncio
-async def test_require_user_mapping(config, mock_api):
-    config.require_user_mapping = True
-    config.approved_users = []
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.bot_mention = "@bot"
-
-    post = {
-        "id": "p1",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "@bot hello",
-        "create_at": 1000
-    }
-
-    with patch('mattermost_bridge.load_user_mapping', return_value={}):
-        await bridge._process_post(post, {"c1": {"type": "D"}})
-        await wait_for_bridge(bridge)
-        # Should post a warning to MM
-        assert mock_api.create_post.called
-        assert "isolation profile" in mock_api.create_post.call_args[0][1]
-
-
-@pytest.mark.asyncio
-async def test_concurrency_locking(config, mock_api, mock_goose_client):
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-    bridge.bot_mention = "@bot"
-    bridge.config.approved_users = []
-
-    # Mock a slow prompt to test locking
-    async def slow_prompt(*args):
-        await asyncio.sleep(0.2)
-        yield {"type": "final", "text": "done"}
-
-    mock_goose_client.prompt.side_effect = slow_prompt
-
-    post = {
-        "id": "p1",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "@bot hello",
-        "create_at": 1000
-    }
-
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"u1": "linux1"}):
-        # Start two tasks for the same thread
-        t1 = asyncio.create_task(bridge._handle_message(post, "linux1",
-                                                        "user1"))
-        t2 = asyncio.create_task(bridge._handle_message(post, "linux1",
-                                                        "user1"))
-
-        await asyncio.gather(t1, t2)
-
-        # Verify they shared the same lock
-        assert "u1:p1" in bridge.session_locks
-
-
-@pytest.mark.asyncio
-async def test_polling_loop_recovery(config, mock_api):
-    # We'll mock _update_channel_cache to fail once then succeed
-    bridge = MattermostBridge(api=mock_api, config=config)
-
-    call_count = 0
-    original_update = bridge._update_channel_cache
-
-    async def mock_update():
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise Exception("Transient Error")
-        return await original_update()
-
-    bridge._update_channel_cache = mock_update
-
-    # Use a small poll interval and mock sleep to exit quickly
-    config.poll_interval = 0.01
-
-    with patch('asyncio.sleep', side_effect=[None, KeyboardInterrupt()]):
-        await bridge.run()
-
-    assert call_count >= 2
-
-
-@pytest.mark.asyncio
-async def test_user_mapping_edge_cases(config, mock_api):
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.bot_mention = "@bot"
-
-    # Case 1: Approved user but no mapping
-    config.approved_users = ["user1"]
-    config.require_user_mapping = True
-    post = {
-        "id": "p1",
-        "user_id": "user1",
-        "channel_id": "c1",
-        "message": "@bot hello"
-    }
-
-    with patch('mattermost_bridge.load_user_mapping', return_value={}):
-        mock_api.get_user = AsyncMock(return_value={"username": "user1"})
-        await bridge._process_post(post, {"c1": {"type": "D"}})
-        await wait_for_bridge(bridge)
-        assert mock_api.create_post.called
-        assert "isolation profile" in mock_api.create_post.call_args[0][1]
-
-    # Case 2: Not approved user but has mapping (should still be ignored)
-    mock_api.create_post.reset_mock()
-    config.approved_users = ["other_user"]
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"user1": "linux1"}):
-        await bridge._process_post(post, {"c1": {"type": "D"}})
-        await wait_for_bridge(bridge)
-        assert not mock_api.create_post.called
-
-
-@pytest.mark.asyncio
-async def test_thinking_trace_truncation(config, mock_api):
-    client = MagicMock()
-
-    async def long_thinking_gen(sid, msg):
-        yield {"type": "thinking", "text": "A" * 12000}
-        yield {"type": "final", "text": "done"}
-
-    client.prompt.side_effect = long_thinking_gen
-    bridge = MattermostBridge(api=mock_api, config=config)
-
-    # Ensure full trace is used (not simplified)
-    config.goose_thinking_trace_simplified = False
-    config.goose_thinking_trace = True
-
-    await bridge._stream_response_to_mattermost(client, "sid", "msg", "cid",
-                                                "rid")
-
-    # Check that update_post was called with truncated attachments
-    update_calls = [
-        c for c in mock_api.update_post.call_args_list
-        if "attachments" in c[1].get("props", {})
-    ]
-    assert len(update_calls) > 0
-
-    last_trace = update_calls[-1][1]["props"]["attachments"][0]["text"]
-    assert "... (truncated) ..." in last_trace
-    assert len(last_trace) < 10000
-
-
-@pytest.mark.asyncio
-async def test_thread_counter_consistency_with_empty_messages(
-        config, mock_api, mock_goose_client):
-    """Ensure that empty messages are ignored both in priming and incremental counting, 
-    and do not trigger catch-up hints."""
-    factory = lambda user: mock_goose_client
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=factory)
-    bridge.bot_mention = "@bot"
-    bridge.config.approved_users = []
-
-    # 1. Priming Turn: Thread has p1(real), p2(empty), p3(mention)
-    mock_api.get_thread = AsyncMock(
-        return_value={
-            "posts": {
-                "p1": {
-                    "id": "p1",
-                    "user_id": "u1",
-                    "message": "hello"
-                },
-                "p2": {
-                    "id": "p2",
-                    "user_id": "u1",
-                    "message": "   "
-                },
-                "p3": {
-                    "id": "p3",
-                    "user_id": "u1",
-                    "message": "@bot check"
-                }
-            }
-        })
-
-    post3 = {
-        "id": "p3",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "@bot check"
-    }
-
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"u1": "linux1"}):
-        await bridge._process_post(post3, {"c1": {"type": "O"}})
-        await wait_for_bridge(bridge)
-
-        # Verify: Should only count p1 and p3 (2 messages).
-        # Joined with 1 earlier message (p1).
-        assert bridge.thread_counters["root1"] == 2
-        args, _ = mock_goose_client.prompt.call_args
-        assert "joined an existing thread with 1 earlier messages" in args[1]
-
-        # 2. Incremental Turn: p4 is empty. Should not trigger any hint for next prompt p5.
-        await bridge._process_post(
-            {
-                "id": "p4",
-                "user_id": "u1",
-                "channel_id": "c1",
-                "root_id": "root1",
-                "message": " "
-            }, {"c1": {
-                "type": "O"
-            }})
-        assert bridge.thread_counters["root1"] == 2
-
-        post5 = {
-            "id": "p5",
-            "user_id": "u1",
-            "channel_id": "c1",
-            "root_id": "root1",
-            "message": "@bot again"
-        }
-        await bridge._process_post(post5, {"c1": {"type": "O"}})
-        await wait_for_bridge(bridge)
-
-        # Verify: thread_size=3 (p1, p3, p5). processed_count was 2 (p1, p3).
-        # new_messages = 3 - 2 - 1 = 0.
-        # Since had_catchup_hint was True from Prompt 1, it should send the "caught up" signal.
-        args, _ = mock_goose_client.prompt.call_args
-        assert "SYSTEM: You are now caught up" in args[1]
-        assert bridge.thread_counters["root1"] == 3
-
-        # 3. Incremental Turn: p6 is empty. Next prompt p7 should have NO SYSTEM HINT at all.
-        await bridge._process_post(
-            {
-                "id": "p6",
-                "user_id": "u1",
-                "channel_id": "c1",
-                "root_id": "root1",
-                "message": "\n\t"
-            }, {"c1": {
-                "type": "O"
-            }})
-        assert bridge.thread_counters["root1"] == 3
-
-        post7 = {
-            "id": "p7",
-            "user_id": "u1",
-            "channel_id": "c1",
-            "root_id": "root1",
-            "message": "@bot last"
-        }
-        await bridge._process_post(post7, {"c1": {"type": "O"}})
-        await wait_for_bridge(bridge)
-
-        # Verify: No hint because p6 was ignored and we were already caught up.
-        args, _ = mock_goose_client.prompt.call_args
-        assert "SYSTEM:" not in args[1]
-        assert "last" in args[1]
-
-
-@pytest.mark.asyncio
-async def test_handle_context_command(config, mock_api, mock_goose_client):
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-    bridge.sessions["u1:r1"] = {"id": "s1", "linux_user": "l1"}
-    bridge.goose_clients["l1"] = mock_goose_client
-    mock_goose_client.context_usage = {"s1": {"used": 100, "size": 1000}}
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "r1",
-        "message": "!context"
-    }
-    await bridge._handle_context_command(post)
-
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "Used: `100` tokens" in msg
-    assert "Total: `1,000` tokens" in msg
-    assert "Usage: `10.0%`" in msg
-
-
-@pytest.mark.asyncio
-async def test_update_channel_cache(config, mock_api):
-    bridge = MattermostBridge(api=mock_api, config=config)
-    mock_api.get_direct_channels = AsyncMock(return_value=[{
-        "id": "c1",
-        "name": "dm"
-    }])
-    mock_api.get_my_teams = AsyncMock(return_value=[{"id": "t1"}])
-    mock_api.get_my_channels = AsyncMock(return_value=[{
-        "id": "c2",
-        "name": "chan"
-    }])
-
-    await bridge._update_channel_cache()
-
-    assert len(bridge.channels_cache) == 2
-    ids = [c["id"] for c in bridge.channels_cache]
-    assert "c1" in ids
-    assert "c2" in ids
-    assert bridge.last_cache_update > 0
-
-
-@pytest.mark.asyncio
-async def test_handle_message_retry_failure(config, mock_api,
-                                            mock_goose_client):
-    """Test that if retry also fails, we report the error to the user."""
-    factory = lambda user: mock_goose_client
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=factory)
-    bridge.bot_mention = "@bot"
-    bridge.config.approved_users = []
-
-    post = {
-        "id": "p1",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "@bot hello"
-    }
-
-    async def mock_fail(sid, msg):
-        if False:
-            yield {}  # Make it a generator
-        raise RuntimeError("Persistent Failure")
-
-    mock_goose_client.prompt.side_effect = mock_fail
-
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"u1": "l1"}):
-        # We need to manually call _handle_message because _process_post spawns a task
-        await bridge._handle_message(post, "l1", "user1")
-
-        # Should see error message to user
-        error_calls = [
-            c for c in mock_api.create_post.call_args_list
-            if "Sorry, I encountered an error" in str(c)
-        ]
-        assert len(error_calls) > 0
-        assert "Persistent Failure" in str(error_calls[0])
-
-
-@pytest.mark.asyncio
-async def test_handle_message_formatting(config, mock_api, mock_goose_client):
-    """Test that messages sent to Goose include sender and attachment info."""
-    factory = lambda user: mock_goose_client
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=factory)
-    bridge.bot_mention = "@bot"
-
-    post = {
-        "id": "p1",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "@bot check this out",
-        "file_ids": ["f1", "f2"]
-    }
-
-    # We'll use a fresh mock to track the exact prompt text
-    mock_goose_client.prompt = MagicMock()
-
-    async def mock_prompt_gen(sid, msg):
-        yield {"type": "final", "text": "done"}
-
-    mock_goose_client.prompt.side_effect = mock_prompt_gen
-
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"u1": "linux1"}):
-        await bridge._handle_message(post, "linux1", "user1")
-
-        args, kwargs = mock_goose_client.prompt.call_args
-        prompt_text = args[1]
-
-        assert "[Has 2 attachment(s)]" in prompt_text
-        assert "[Sender: @user1]" in prompt_text
-        assert "check this out" in prompt_text
-        assert "@bot" not in prompt_text
-
-
-@pytest.mark.asyncio
-async def test_handle_message_empty(config, mock_api):
-    bridge = MattermostBridge(api=mock_api, config=config)
-    post = {"user_id": "u1", "message": "", "channel_id": "c1"}
-    await bridge._handle_message(post, "l1", "u1")
-    assert not mock_api.create_post.called
-
-
-@pytest.mark.asyncio
-async def test_handle_stop_command_cancel_active_task(config, mock_api,
-                                                      mock_goose_client):
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-    mock_task = MagicMock()
-    bridge.active_tasks["u1:r1"] = mock_task
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "r1",
-        "message": "!stop"
-    }
-    await bridge._handle_stop_command(post)
-    mock_task.cancel.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_handle_context_command_no_session(config, mock_api):
-    bridge = MattermostBridge(api=mock_api, config=config)
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "r1",
-        "message": "!context"
-    }
-    await bridge._handle_context_command(post)
-    assert mock_api.create_post.called
-    assert "No active session" in mock_api.create_post.call_args[0][1]
-
-
-@pytest.mark.asyncio
-async def test_handle_context_command_no_client(config, mock_api):
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.sessions["u1:r1"] = {"id": "s1", "linux_user": "l1"}
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "r1",
-        "message": "!context"
-    }
-    await bridge._handle_context_command(post)
-    assert "Agent client not found" in mock_api.create_post.call_args[0][1]
-
-
-@pytest.mark.asyncio
-async def test_handle_context_command_no_usage(config, mock_api,
-                                               mock_goose_client):
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-    bridge.sessions["u1:r1"] = {"id": "s1", "linux_user": "l1"}
-    bridge.goose_clients["l1"] = mock_goose_client
-    mock_goose_client.context_usage = {}
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "r1",
-        "message": "!context"
-    }
-    await bridge._handle_context_command(post)
-    assert "No context usage information available" in mock_api.create_post.call_args[
-        0][1]
-
-
-@pytest.mark.asyncio
-async def test_session_pruning_with_locks_and_queues(config, mock_api,
-                                                     mock_goose_client):
-    config.max_sessions = 1
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-    bridge.sessions = {
-        "u1:r1": {
-            "id": "s1",
-            "linux_user": "l1"
-        },
-        "u1:r2": {
-            "id": "s2",
-            "linux_user": "l1"
-        }
-    }
-    bridge.goose_clients["l1"] = mock_goose_client
-    mock_goose_client.session_queues = {"s1": MagicMock(), "s2": MagicMock()}
-    bridge.session_locks = {"u1:r1": MagicMock(), "u1:r2": MagicMock()}
-
-    await bridge._prune_sessions()
-    assert "u1:r1" not in bridge.sessions
-    assert "s1" not in mock_goose_client.session_queues
-    assert "u1:r1" not in bridge.session_locks
-
-
-@pytest.mark.asyncio
-async def test_stream_response_thinking_trace_unsimplified_and_delayed(
-        config, mock_api, mock_goose_client):
-    import time
-    bridge = MattermostBridge(api=mock_api, config=config)
-    config.goose_thinking_trace = True
-    config.goose_thinking_trace_simplified = False
-
-    async def mock_thinking_prompt(sid, msg):
-        yield {"type": "thinking", "text": "thought 1"}
-        yield {"type": "content", "text": "part 1"}
-        yield {"type": "final", "text": "final ans"}
-
-    mock_goose_client.prompt.side_effect = mock_thinking_prompt
-
-    time_values = [100.0, 100.0, 101.5, 102.0]
-    with patch("time.time", side_effect=time_values):
-        await bridge._stream_response_to_mattermost(mock_goose_client, "s1",
-                                                    "msg", "c1", "r1")
-
-    assert mock_api.update_post.called
-
-
-@pytest.mark.asyncio
-async def test_stream_response_thinking_trace_simplified_with_title(
-        config, mock_api, mock_goose_client):
-    import time
-    bridge = MattermostBridge(api=mock_api, config=config)
-    config.goose_thinking_trace = True
-    config.goose_thinking_trace_simplified = True
-
-    async def mock_thinking_prompt_with_title(sid, msg):
-        yield {"type": "title", "title": "Executing Task"}
-        yield {"type": "thinking", "text": "thought 1"}
-        yield {"type": "content", "text": "part 1"}
-        yield {"type": "final", "text": "final ans"}
-
-    mock_goose_client.prompt.side_effect = mock_thinking_prompt_with_title
-
-    # We also mock time to trigger post update
-    time_values = [100.0, 100.0, 101.5, 102.0, 103.0]
-    with patch("time.time", side_effect=time_values):
-        await bridge._stream_response_to_mattermost(mock_goose_client, "s1",
-                                                    "msg", "c1", "r1")
-
-    # Verify that the post was updated with the simplified thinking trace using the title
-    assert mock_api.update_post.called
-
-    # Check that update_post was called with the working on task format
-    found_title_working = False
-    for call in mock_api.update_post.call_args_list:
-        post_id, message = call[0]
-        if ":thinking_face: **Working on executing task...**" in message:
-            found_title_working = True
-            break
-    assert found_title_working
-
-
-@pytest.mark.asyncio
-async def test_stream_response_initial_post_fails(config, mock_api,
-                                                  mock_goose_client):
-    import time
-    bridge = MattermostBridge(api=mock_api, config=config)
-    mock_api.create_post = AsyncMock(side_effect=[None, {"id": "p1"}])
-
-    async def mock_simple_prompt(sid, msg):
-        yield {"type": "thinking", "text": "thought 1"}
-        yield {"type": "final", "text": "final ans"}
-
-    mock_goose_client.prompt.side_effect = mock_simple_prompt
-
-    time_values = [100.0, 100.0, 102.0, 103.0]
-    with patch("time.time", side_effect=time_values):
-        await bridge._stream_response_to_mattermost(mock_goose_client, "s1",
-                                                    "msg", "c1", "r1")
-
-    assert mock_api.create_post.call_count == 2
-
-
-@pytest.mark.asyncio
-async def test_process_post_stop_and_context(config, mock_api,
-                                             mock_goose_client):
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-    bridge.bot_id = "bot_id"
-    bridge.bot_mention = "@bot"
-
-    post_stop = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "!stop",
-        "id": "p1"
-    }
-    await bridge._process_post(post_stop, {"c1": {"type": "O"}})
-
-    post_context = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "!context",
-        "id": "p2"
-    }
-    await bridge._process_post(post_context, {"c1": {"type": "O"}})
-
-    assert mock_api.create_post.called
-
-
-@pytest.mark.asyncio
-async def test_process_post_no_thread_posts(config, mock_api,
-                                            mock_goose_client):
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-    bridge.bot_mention = "@bot"
-    mock_api.get_thread = AsyncMock(return_value=None)
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "@bot hello",
-        "id": "p1"
-    }
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"u1": "linux1"}):
-        await bridge._process_post(post, {"c1": {"type": "O"}})
-        await wait_for_bridge(bridge)
-        assert bridge.thread_counters["p1"] == 1
-
-
-@pytest.mark.asyncio
-async def test_run_initialize_fails(config, mock_api):
-    bridge = MattermostBridge(api=mock_api, config=config)
     mock_api.get_me = AsyncMock(return_value=None)
-    await bridge.run()
-    assert not mock_api.get_direct_channels.called
+    ok2 = await bridge.initialize()
+    assert ok2 is False
 
 
 @pytest.mark.asyncio
-async def test_polling_posts_data_edge_cases(config, mock_api):
+async def test_channel_cache_dedup_and_ttl(mock_api):
+    # dm_1 appears in both get_direct_channels and get_my_channels
+    mock_api.get_my_channels = AsyncMock(return_value=[
+        {
+            "id": "dm_1",
+            "type": "D"
+        },
+        {
+            "id": "chan_1",
+            "type": "O"
+        },
+    ])
+    now = [100.0]
+    cache = ChannelCache(mock_api, ttl=60.0, clock=lambda: now[0], debug=True)
+
+    cmap1 = await cache.get_channel_map()
+    assert set(cmap1.keys()) == {"dm_1", "chan_1"}
+    assert mock_api.get_direct_channels.await_count == 1
+
+    # Within TTL: no API refresh
+    now[0] += 10.0
+    await cache.get_channel_map()
+    assert mock_api.get_direct_channels.await_count == 1
+
+    # Past TTL: refreshes
+    now[0] += 60.0
+    await cache.get_channel_map()
+    assert mock_api.get_direct_channels.await_count == 2
+
+    # Explicit force refresh
+    await cache.get_channels(force=True)
+    assert mock_api.get_direct_channels.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_polling_loop_ordering_filtering_and_error_recovery(
+    config,
+    mock_api,
+):
     bridge = MattermostBridge(api=mock_api, config=config)
     bridge.last_since = 100
 
-    mock_api.get_channel_posts = AsyncMock(side_effect=[
-        None, {
-            "posts": {
-                "p1": {
-                    "create_at": 50,
-                    "id": "p1",
-                    "user_id": "u1",
-                    "message": "msg"
+    processed = []
+
+    async def capture_post(post, channel_map):
+        processed.append(post["id"])
+
+    bridge.pipeline.process_post = AsyncMock(side_effect=capture_post)
+
+    # 1. Transient error -> 2. None/missing posts -> 3. Mixed timestamps -> 4. Stop
+    call_num = [0]
+
+    async def channel_posts_seq(cid, since):
+        if cid != "chan_1":
+            return {"posts": {}, "order": []}
+        call_num[0] += 1
+        if call_num[0] == 1:
+            raise RuntimeError("transient network glitch")
+        if call_num[0] == 2:
+            return None
+        if call_num[0] == 3:
+            return {"no_posts_key": True}
+        if call_num[0] == 4:
+            return {
+                "posts": {
+                    "p_old": {
+                        "id": "p_old",
+                        "create_at": 100
+                    },
+                    "p_new2": {
+                        "id": "p_new2",
+                        "create_at": 200
+                    },
+                    "p_new1": {
+                        "id": "p_new1",
+                        "create_at": 150
+                    },
                 }
             }
-        },
-        KeyboardInterrupt()
-    ])
+        bridge.is_shutting_down = True
+        return {"posts": {}}
 
-    mock_api.get_direct_channels = AsyncMock(return_value=[{"id": "c1"}])
-    mock_api.get_my_teams = AsyncMock(return_value=[])
+    mock_api.get_channel_posts = AsyncMock(side_effect=channel_posts_seq)
 
-    with patch("asyncio.sleep", return_value=None):
+    async def stop_after_batch(_seconds):
+        if call_num[0] >= 4:
+            bridge.is_shutting_down = True
+
+    with patch("asyncio.sleep", side_effect=stop_after_batch):
         await bridge.run()
 
-    assert bridge.last_since == 100
+    assert processed == ["p_new1", "p_new2"]
 
 
 @pytest.mark.asyncio
-async def test_run_keyboard_interrupt_termination_fails(config, mock_api,
-                                                        mock_goose_client):
+async def test_run_exits_cleanly_when_initialize_fails(config, mock_api):
+    mock_api.get_me = AsyncMock(return_value=None)
     bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.goose_clients["l1"] = mock_goose_client
-
-    mock_process = MagicMock()
-    mock_process.returncode = None
-    mock_process.terminate = MagicMock(
-        side_effect=Exception("Failed to terminate"))
-    mock_goose_client.process = mock_process
-
-    mock_api.get_direct_channels = AsyncMock(return_value=[])
-    mock_api.get_my_teams = AsyncMock(return_value=[])
-
-    with patch("asyncio.sleep", side_effect=KeyboardInterrupt()):
-        await bridge.run()
-
-    assert mock_process.terminate.called
+    await bridge.run()
+    mock_api.get_channel_posts.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_impersonate_command_permission_denied(config, mock_api):
-    config.admin_users = ["admin1"]
-    config.approved_users = []
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.bot_id = "bot_id"
-    bridge.bot_username = "bot"
-    bridge.bot_mention = "@bot"
-    mock_api.get_user = AsyncMock(return_value={
-        "id": "u1",
-        "username": "user1"
-    })
-
-    post = {
-        "id": "p1",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "!impersonate @someuser"
-    }
-
-    await bridge._process_post(post, {"c1": {"type": "O"}})
-
-    assert mock_api.create_post.called
-    args, kwargs = mock_api.create_post.call_args
-    assert "Permission denied" in args[1]
-
-
-@pytest.mark.asyncio
-async def test_impersonate_command_user_not_found(config, mock_api):
-    config.admin_users = ["admin1"]
-    config.approved_users = []
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.bot_id = "bot_id"
-    bridge.bot_username = "bot"
-    bridge.bot_mention = "@bot"
-    mock_api.get_user = AsyncMock(side_effect=lambda uid: {
-        "id": "admin1",
-        "username": "admin1"
-    } if uid == "admin1" else None)
-    mock_api.search_users = AsyncMock(return_value=[])
-
-    post = {
-        "id": "p1",
-        "user_id": "admin1",
-        "channel_id": "c1",
-        "message": "!impersonate nonexistentuser"
-    }
-
-    await bridge._process_post(post, {"c1": {"type": "O"}})
-
-    assert mock_api.create_post.called
-    args, kwargs = mock_api.create_post.call_args
-    assert "could not be found" in args[1]
-
-
-@pytest.mark.asyncio
-async def test_impersonate_command_bot_self(config, mock_api):
-    config.admin_users = ["admin1"]
-    config.approved_users = []
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.bot_id = "bot_id"
-    bridge.bot_username = "bot"
-    bridge.bot_mention = "@bot"
-    mock_api.get_user = AsyncMock(side_effect=lambda uid: {
-        "id": "admin1",
-        "username": "admin1"
-    } if uid == "admin1" else ({
-        "id": "bot_id",
-        "username": "bot"
-    } if uid == "bot_id" else None))
-    mock_api.search_users = AsyncMock(return_value=[{
-        "id": "bot_id",
-        "username": "bot"
-    }])
-
-    post = {
-        "id": "p1",
-        "user_id": "admin1",
-        "channel_id": "c1",
-        "message": "!impersonate bot"
-    }
-
-    await bridge._process_post(post, {"c1": {"type": "O"}})
-
-    assert mock_api.create_post.called
-    args, kwargs = mock_api.create_post.call_args
-    assert "cannot impersonate the bot itself" in args[1]
-
-
-@pytest.mark.asyncio
-async def test_impersonate_command_success_and_cleared(config, mock_api,
-                                                       mock_goose_client):
-    config.admin_users = ["admin1"]
-    config.approved_users = []
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-    bridge.bot_id = "bot_id"
-    bridge.bot_username = "bot"
-    bridge.bot_mention = "@bot"
-
-    users_db = {
-        "admin1": {
-            "id": "admin1",
-            "username": "admin1"
-        },
-        "target1": {
-            "id": "target1",
-            "username": "target1"
-        }
-    }
-    mock_api.get_user = AsyncMock(side_effect=lambda uid: users_db.get(uid))
-    mock_api.search_users = AsyncMock(return_value=[{
-        "id": "target1",
-        "username": "target1"
-    }])
-
-    # 1. Start Impersonating
-    post = {
-        "id": "p1",
-        "user_id": "admin1",
-        "channel_id": "c1",
-        "message": "!impersonate @target1"
-    }
-    await bridge._process_post(post, {"c1": {"type": "O"}})
-    assert bridge.impersonations["admin1"] == {
-        "id": "target1",
-        "username": "target1"
-    }
-
-    assert mock_api.create_post.called
-    args, kwargs = mock_api.create_post.call_args
-    assert "now impersonating @target1" in args[1]
-
-    # 2. Subsequent prompt is handled under effective user
-    mock_api.create_post.reset_mock()
-    msg_post = {
-        "id": "p2",
-        "user_id": "admin1",
-        "channel_id": "c1",
-        "message": "@bot Hello",
-        "root_id": "root1"
-    }
-
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"target1": "target_linux"}):
-        await bridge._process_post(msg_post, {"c1": {"type": "O"}})
-        await wait_for_bridge(bridge)
-
-        # Session should be key target1:root1
-        assert "target1:root1" in bridge.sessions
-        assert bridge.sessions["target1:root1"]["linux_user"] == "target_linux"
-
-    # 3. Clear Impersonation
-    mock_api.create_post.reset_mock()
-    clear_post = {
-        "id": "p3",
-        "user_id": "admin1",
-        "channel_id": "c1",
-        "message": "!impersonate clear"
-    }
-    await bridge._process_post(clear_post, {"c1": {"type": "O"}})
-    assert "admin1" not in bridge.impersonations
-    args, kwargs = mock_api.create_post.call_args
-    assert "Impersonation cleared" in args[1]
-
-
-@pytest.mark.asyncio
-async def test_impersonate_stop_and_context(config, mock_api,
-                                            mock_goose_client):
-    config.admin_users = ["admin1"]
-    mock_goose_client.cancel_prompt = AsyncMock(return_value=True)
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-    bridge.bot_id = "bot_id"
-    bridge.bot_username = "bot"
-    bridge.bot_mention = "@bot"
-
-    bridge.impersonations["admin1"] = {"id": "target1", "username": "target1"}
-    bridge.sessions["target1:root1"] = {
-        "id": "session_target",
-        "linux_user": "target_linux"
-    }
-    bridge.goose_clients["target_linux"] = mock_goose_client
-    mock_goose_client.context_usage = {
-        "session_target": {
-            "used": 100,
-            "size": 1000
-        }
-    }
-
-    users_db = {
-        "admin1": {
-            "id": "admin1",
-            "username": "admin1"
-        },
-        "target1": {
-            "id": "target1",
-            "username": "target1"
-        }
-    }
-    mock_api.get_user = AsyncMock(side_effect=lambda uid: users_db.get(uid))
-
-    # Test !context under impersonation
-    context_post = {
-        "id": "p1",
-        "user_id": "admin1",
-        "channel_id": "c1",
-        "message": "!context",
-        "root_id": "root1"
-    }
-    await bridge._process_post(context_post, {"c1": {"type": "O"}})
-    assert mock_api.create_post.called
-    args, kwargs = mock_api.create_post.call_args
-    assert "10.0%" in args[1]
-
-    # Test !stop under impersonation
-    mock_api.create_post.reset_mock()
-    stop_post = {
-        "id": "p2",
-        "user_id": "admin1",
-        "channel_id": "c1",
-        "message": "!stop",
-        "root_id": "root1"
-    }
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"target1": "target_linux"}):
-        await bridge._process_post(stop_post, {"c1": {"type": "O"}})
-        assert mock_goose_client.cancel_prompt.called
-        assert "cancelled" in mock_api.create_post.call_args[0][1]
-
-
-@pytest.mark.asyncio
-async def test_handle_agents_command(config, mock_api):
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.config.agents = {
-        "goose": {
-            "command": ["goose", "acp"]
-        },
-        "hermes": {
-            "command": ["hermes", "acp"]
-        }
-    }
-    bridge.sessions["u1:root1"] = {
-        "id": "s1",
-        "linux_user": "l1",
-        "agent_name": "goose"
-    }
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!agents"
-    }
-    await bridge._handle_agents_command(post)
-
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "Available Agents" in msg
-    assert "goose" in msg
-    assert "hermes" in msg
-    assert "active in thread" in msg
-
-
-@pytest.mark.asyncio
-async def test_handle_agent_command(config, mock_api, mock_goose_client):
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-    bridge.config.agents = {
-        "goose": {
-            "command": ["goose", "acp"]
-        },
-        "hermes": {
-            "command": ["hermes", "acp"]
-        }
-    }
-    bridge.sessions["u1:root1"] = {
-        "id": "s1",
-        "linux_user": "l1",
-        "agent_name": "goose"
-    }
-    bridge.agent_clients[("l1", "goose")] = mock_goose_client
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!agent hermes"
-    }
-    await bridge._handle_agent_command(post, "!agent hermes")
-
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "Switched agent" in msg
-    assert "hermes" in msg
-    assert bridge.sessions["u1:root1"]["agent_name"] == "hermes"
-    assert bridge.sessions["u1:root1"]["id"] is None
-
-
-@pytest.mark.asyncio
-async def test_handle_agent_default_command(config, mock_api, tmp_path):
-    config.user_agent_preferences_file = str(tmp_path / "user_agent_prefs.json")
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.config.agents = {
-        "goose": {
-            "command": ["goose", "acp"]
-        },
-        "hermes": {
-            "command": ["hermes", "acp"]
-        }
-    }
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!agent-default hermes"
-    }
-    await bridge._handle_agent_default_command(post, "!agent-default hermes")
-
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "default agent set to `hermes`" in msg
-    assert bridge._get_user_default_agent("u1") == "hermes"
-
-
-@pytest.mark.asyncio
-async def test_prewarm_agents_success(config, mock_api, tmp_path):
-    prewarm_file = tmp_path / "prewarm.json"
-    mapping_file = tmp_path / "user_mapping.json"
-    import json
-    prewarm_file.write_text(
-        json.dumps({
-            "alice": ["hermes"],
-            "bob": ["goose", "default"]
-        }))
-    mapping_file.write_text(json.dumps({"alice": "linux_alice"}))
-
-    config.prewarm_config_file = str(prewarm_file)
-    config.user_mapping_file = str(mapping_file)
-    config.agents = {
-        "goose": {
-            "command": ["goose", "acp"]
-        },
-        "hermes": {
-            "command": ["hermes", "acp"]
-        }
-    }
-
-    created_clients = {}
-
-    def mock_factory(user, agent):
-        from unittest.mock import AsyncMock, MagicMock
-        m = MagicMock()
-        m.ensure_running = AsyncMock()
-        created_clients[(user, agent)] = m
-        return m
-
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              agent_client_factory=mock_factory)
-    success = await bridge.initialize()
-    assert success is True
-
-    # alice is mapped to linux_alice -> ("linux_alice", "hermes")
-    assert ("linux_alice", "hermes") in bridge.agent_clients
-    assert created_clients[("linux_alice", "hermes")].ensure_running.called
-
-    # bob is unmapped -> (None, "goose") and (None, "default" -> "goose")
-    assert (None, "goose") in bridge.agent_clients
-    assert created_clients[(None, "goose")].ensure_running.called
-
-
-@pytest.mark.asyncio
-async def test_prewarm_agents_require_user_mapping(config, mock_api, tmp_path):
-    prewarm_file = tmp_path / "prewarm.json"
-    mapping_file = tmp_path / "user_mapping.json"
-    import json
-    prewarm_file.write_text(json.dumps({"unmapped_user": ["hermes"]}))
-    mapping_file.write_text(json.dumps({}))
-
-    config.prewarm_config_file = str(prewarm_file)
-    config.user_mapping_file = str(mapping_file)
-    config.require_user_mapping = True
-    config.agents = {"hermes": {"command": ["hermes", "acp"]}}
-
-    created_clients = {}
-
-    def mock_factory(user, agent):
-        from unittest.mock import AsyncMock, MagicMock
-        m = MagicMock()
-        m.ensure_running = AsyncMock()
-        created_clients[(user, agent)] = m
-        return m
-
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              agent_client_factory=mock_factory)
-    success = await bridge.initialize()
-    assert success is True
-    assert len(bridge.agent_clients) == 0
-
-
-@pytest.mark.asyncio
-async def test_prewarm_agents_fault_tolerance(config, mock_api, tmp_path):
-    config.prewarm_users = "user1:failing_agent,user2:good_agent"
-    config.agents = {
-        "failing_agent": {
-            "command": ["fail"]
-        },
-        "good_agent": {
-            "command": ["good"]
-        }
-    }
-
-    created_clients = {}
-
-    def mock_factory(user, agent):
-        from unittest.mock import AsyncMock, MagicMock
-        m = MagicMock()
-        if agent == "failing_agent":
-            m.ensure_running = AsyncMock(
-                side_effect=RuntimeError("Process spawn failed"))
-        else:
-            m.ensure_running = AsyncMock()
-        created_clients[(user, agent)] = m
-        return m
-
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              agent_client_factory=mock_factory)
-    success = await bridge.initialize()
-    assert success is True
-
-    # failing_agent failed but good_agent still started
-    assert (None, "good_agent") in bridge.agent_clients
-    assert created_clients[(None, "good_agent")].ensure_running.called
-
-
-@pytest.mark.asyncio
-async def test_restart_command_permission_denied(config, mock_api):
-    config.admin_users = ["admin1"]
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.bot_id = "bot_id"
-    bridge.bot_username = "bot"
-    bridge.bot_mention = "@bot"
-    mock_api.get_user = AsyncMock(return_value={
-        "id": "u1",
-        "username": "user1"
-    })
-
-    post = {
-        "id": "p1",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "@bot !restart"
-    }
-
-    await bridge._process_post(post, {"c1": {"type": "O"}})
-
-    assert mock_api.create_post.called
-    args, _ = mock_api.create_post.call_args
-    assert "Permission denied: Only administrators can use the `!restart` command" in args[
-        1]
-    assert bridge.is_shutting_down is False
-
-
-@pytest.mark.asyncio
-async def test_restart_command_ignored_when_not_dm_and_not_mentioned(
-        config, mock_api):
-    config.admin_users = ["admin1"]
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.bot_id = "bot_id"
-    bridge.bot_username = "bot"
-    bridge.bot_mention = "@bot"
-    mock_api.get_user = AsyncMock(return_value={
-        "id": "admin1",
-        "username": "admin1"
-    })
-
-    post = {
-        "id": "p1",
-        "user_id": "admin1",
-        "channel_id": "c1",
-        "message": "!restart"
-    }
-
-    # Public channel without mention
-    await bridge._process_post(post, {"c1": {"type": "O"}})
-
-    assert not mock_api.create_post.called
-    assert bridge.is_shutting_down is False
-
-
-@pytest.mark.asyncio
-async def test_restart_command_admin_success(config, mock_api):
-    config.admin_users = ["admin1"]
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.bot_id = "bot_id"
-    bridge.bot_username = "bot"
-    bridge.bot_mention = "@bot"
-    mock_api.get_user = AsyncMock(return_value={
-        "id": "admin1",
-        "username": "admin1"
-    })
-
-    bridge.graceful_shutdown = AsyncMock()
-
-    post = {
-        "id": "p1",
-        "user_id": "admin1",
-        "channel_id": "c1",
-        "message": "@bot !restart"
-    }
-
-    with pytest.raises(SystemExit) as exc_info:
-        await bridge._process_post(post, {"c1": {"type": "O"}})
-
-    assert exc_info.value.code == 0
-    assert mock_api.create_post.called
-    args, _ = mock_api.create_post.call_args
-    assert "Restarting goose-mm-bridge service... Gracefully closing active sessions." in args[
-        1]
-    assert bridge.graceful_shutdown.called
-
-
-@pytest.mark.asyncio
-async def test_graceful_shutdown_full_flow(config, mock_api):
+async def test_graceful_shutdown_full_flow_multiple_clients_and_kill_timeout(
+    config,
+    mock_api,
+):
     bridge = MattermostBridge(api=mock_api, config=config)
 
-    # Setup mock ACP client
-    mock_client = MagicMock()
-    mock_client.cancel_prompt = AsyncMock(return_value=True)
-    mock_client.send_request = AsyncMock(return_value={})
-    mock_client.session_queues = {"s1": asyncio.Queue()}
-    mock_client.process = MagicMock()
-    mock_client.process.returncode = None
-    mock_client.process.terminate = MagicMock()
-    mock_client.process.wait = AsyncMock(return_value=0)
+    # Client 1: normal subprocess exiting cleanly on terminate()
+    c1 = MagicMock()
+    c1.send_request = AsyncMock(return_value={"result": {}})
+    c1.cancel_prompt = AsyncMock()
+    c1.session_queues = {"s1": asyncio.Queue(), "s2": asyncio.Queue()}
+    c1.session_models = {"s1": {}, "s2": {}}
+    c1.context_usage = {"s1": {"used": 1, "size": 2}}
+    p1 = MagicMock()
+    p1.returncode = None
+    p1.wait = AsyncMock(return_value=0)
+    c1.process = p1
 
-    bridge.agent_clients = {("linux_user", "goose"): mock_client}
-    bridge.sessions = {
-        "user1:root1": {
-            "id": "s1",
-            "linux_user": "linux_user",
-            "agent_name": "goose"
-        }
-    }
-    bridge.session_locks = {"user1:root1": asyncio.Lock()}
+    # Client 2: stubborn subprocess whose wait() times out -> kill()
+    c2 = MagicMock()
+    c2.send_request = AsyncMock(return_value={"result": {}})
+    c2.cancel_prompt = AsyncMock()
+    c2.session_queues = {"s3": asyncio.Queue()}
+    c2.session_models = {"s3": {}}
+    c2.context_usage = {"s3": {}}
+    p2 = MagicMock()
+    p2.returncode = None
 
-    # Setup active task
-    async def dummy_task():
-        await asyncio.sleep(10)
+    async def hung_wait():
+        await asyncio.sleep(5.0)
 
-    active_task = asyncio.create_task(dummy_task())
-    bridge.active_tasks = {"user1:root1": active_task}
+    p2.wait = hung_wait
+    c2.process = p2
 
-    # Setup background task
-    bg_task = asyncio.create_task(dummy_task())
+    bridge.agent_pool.clients[("alice", "goose")] = c1
+    bridge.agent_pool.clients[("bob", "hermes")] = c2
+
+    bridge.sessions.activate("u1", "r1", "s1", "alice", "goose", None)
+    bridge.sessions.activate("u1", "r2", "s2", "alice", "goose", None)
+    bridge.sessions.activate("u2", "r3", "s3", "bob", "hermes", None)
+
+    active_task = asyncio.create_task(asyncio.sleep(10.0))
+    bg_task = asyncio.create_task(asyncio.sleep(10.0))
+    bridge.sessions.register_active_task("u1:r1", active_task)
     bridge.background_tasks.add(bg_task)
+
+    # Shorten terminate timeout inside terminate_all call by patching wait_for
+    orig_terminate = bridge.agent_pool.terminate_all
+    bridge.agent_pool.terminate_all = lambda timeout=0.02: orig_terminate(
+        timeout=0.02)
 
     await bridge.graceful_shutdown()
 
     assert bridge.is_shutting_down is True
+    assert len(bridge.sessions.sessions) == 0
     assert active_task.cancelled()
     assert bg_task.cancelled()
-    mock_client.cancel_prompt.assert_awaited_once_with("s1")
-    mock_client.send_request.assert_awaited_once_with("session/close",
-                                                      {"sessionId": "s1"})
-    assert len(bridge.sessions) == 0
-    assert len(bridge.session_locks) == 0
-    assert len(mock_client.session_queues) == 0
-    mock_client.process.terminate.assert_called_once()
-    mock_client.process.wait.assert_awaited_once()
+    c1.cancel_prompt.assert_any_await("s1")
+    c1.cancel_prompt.assert_any_await("s2")
+    c2.cancel_prompt.assert_awaited_once_with("s3")
+    p1.terminate.assert_called_once()
+    p1.kill.assert_not_called()
+    p2.terminate.assert_called_once()
+    p2.kill.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_graceful_shutdown_process_kill_on_timeout(config, mock_api):
-    bridge = MattermostBridge(api=mock_api, config=config)
-
-    mock_client = MagicMock()
-    mock_client.session_queues = {}
-    mock_client.process = MagicMock()
-    mock_client.process.returncode = None
-    mock_client.process.terminate = MagicMock()
-
-    async def hanging_wait():
-        await asyncio.sleep(10)
-
-    mock_client.process.wait = hanging_wait
-    mock_client.process.kill = MagicMock()
-
-    bridge.agent_clients = {("linux_user", "goose"): mock_client}
-
-    # Patch wait_for with a tiny timeout to test kill path quickly
-    orig_wait_for = asyncio.wait_for
-
-    async def fast_wait_for(fut, timeout):
-        if timeout == 3.0:
-            return await orig_wait_for(fut, 0.01)
-        return await orig_wait_for(fut, timeout)
-
-    with patch("asyncio.wait_for", side_effect=fast_wait_for):
-        await bridge.graceful_shutdown()
-
-    mock_client.process.terminate.assert_called_once()
-    mock_client.process.kill.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_is_admin_checks(config, mock_api):
-    bridge = MattermostBridge(api=mock_api, config=config)
-
-    # 1. No admin users configured
-    config.admin_users = []
-    assert await bridge._is_admin("u1") is False
-
-    # 2. Match by user_id
-    config.admin_users = ["u1"]
-    assert await bridge._is_admin("u1") is True
-    # Should not even call get_user
-    assert not mock_api.get_user.called
-
-    # 3. Match by username
-    config.admin_users = ["admin_username"]
-    mock_api.get_user = AsyncMock(return_value={
-        "id": "u2",
-        "username": "admin_username"
-    })
-    assert await bridge._is_admin("u2") is True
-    mock_api.get_user.assert_awaited_once_with("u2")
-
-    # 4. Neither matches
-    mock_api.get_user = AsyncMock(return_value={
-        "id": "u3",
-        "username": "regular_user"
-    })
-    assert await bridge._is_admin("u3") is False
-
-
-@pytest.mark.asyncio
-async def test_graceful_shutdown_multiple_clients_and_sessions(
-        config, mock_api):
-    bridge = MattermostBridge(api=mock_api, config=config)
-
-    mock_c1 = MagicMock()
-    mock_c1.cancel_prompt = AsyncMock(return_value=True)
-    mock_c1.send_request = AsyncMock(return_value={})
-    mock_c1.session_queues = {"s1": asyncio.Queue()}
-    mock_c1.process = MagicMock()
-    mock_c1.process.returncode = None
-    mock_c1.process.terminate = MagicMock()
-    mock_c1.process.wait = AsyncMock(return_value=0)
-
-    mock_c2 = MagicMock()
-    mock_c2.cancel_prompt = AsyncMock(return_value=True)
-    mock_c2.send_request = AsyncMock(return_value={})
-    mock_c2.session_queues = {"s2": asyncio.Queue()}
-    mock_c2.process = MagicMock()
-    mock_c2.process.returncode = None
-    mock_c2.process.terminate = MagicMock()
-    mock_c2.process.wait = AsyncMock(return_value=0)
-
-    bridge.agent_clients = {
-        ("user1", "agent1"): mock_c1,
-        ("user2", "agent2"): mock_c2
-    }
-    bridge.sessions = {
-        "k1": {
-            "id": "s1",
-            "linux_user": "user1",
-            "agent_name": "agent1"
-        },
-        "k2": {
-            "id": "s2",
-            "linux_user": "user2",
-            "agent_name": "agent2"
-        }
-    }
-
-    await bridge.graceful_shutdown()
-
-    mock_c1.cancel_prompt.assert_awaited_once_with("s1")
-    mock_c1.send_request.assert_awaited_once_with("session/close",
-                                                  {"sessionId": "s1"})
-    mock_c1.process.terminate.assert_called_once()
-    mock_c1.process.wait.assert_awaited_once()
-
-    mock_c2.cancel_prompt.assert_awaited_once_with("s2")
-    mock_c2.send_request.assert_awaited_once_with("session/close",
-                                                  {"sessionId": "s2"})
-    mock_c2.process.terminate.assert_called_once()
-    mock_c2.process.wait.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_handle_model_query_active_session(config, mock_api):
-    mock_client = MagicMock()
-    mock_client.get_models = MagicMock(
-        return_value={
-            "current_model":
-                "model-a",
-            "available_models": [{
-                "id": "model-a",
-                "name": "Model Alpha",
-                "description": "Fast"
-            }, {
-                "id": "model-b",
-                "name": "Model Beta"
-            }]
-        })
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.agent_clients[(None, "goose")] = mock_client
-    bridge.sessions["u1:root1"] = {
-        "id": "s1",
-        "linux_user": None,
-        "agent_name": "goose"
-    }
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!models"
-    }
-    await bridge._handle_model_command(post, "!models")
-
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "Model Status" in msg
-    assert "`model-a`" in msg
-    assert "active in thread" in msg
-    assert "`model-b`" in msg
-
-
-@pytest.mark.asyncio
-async def test_handle_model_query_no_session(config, mock_api):
-    config.goose_model = "claude-3-5-sonnet"
-    mock_client = MagicMock()
-    mock_client.get_models = MagicMock(return_value=None)
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.agent_clients[(None, "goose")] = mock_client
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!model"
-    }
-    await bridge._handle_model_command(post, "!model")
-
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "`claude-3-5-sonnet`" in msg
-    assert "default from environment" in msg
-
-
-@pytest.mark.asyncio
-async def test_handle_model_switch_active_session(config, mock_api):
-    mock_client = MagicMock()
-    mock_client.get_models = MagicMock(
-        return_value={
-            "current_model": "model-a",
-            "available_models": [{
-                "id": "model-a"
-            }, {
-                "id": "model-b"
-            }]
-        })
-    mock_client.set_model = AsyncMock(return_value={})
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.agent_clients[(None, "goose")] = mock_client
-    bridge.sessions["u1:root1"] = {
-        "id": "s1",
-        "linux_user": None,
-        "agent_name": "goose"
-    }
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!model model-b"
-    }
-    await bridge._handle_model_command(post, "!model model-b")
-
-    mock_client.set_model.assert_awaited_once_with("s1", "model-b")
-    assert bridge.sessions["u1:root1"]["model_name"] == "model-b"
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "Switched model for this thread to `model-b`" in msg
-
-
-@pytest.mark.asyncio
-async def test_handle_model_switch_staged_no_session(config, mock_api):
-    mock_client = MagicMock()
-    mock_client.get_models = MagicMock(return_value=None)
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.agent_clients[(None, "goose")] = mock_client
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!model custom-model"
-    }
-    await bridge._handle_model_command(post, "!model custom-model")
-
-    assert bridge.sessions["u1:root1"]["model_name"] == "custom-model"
-    assert bridge.sessions["u1:root1"]["id"] is None
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "Model set to `custom-model` for this thread. It will apply when the session begins." in msg
-
-
-@pytest.mark.asyncio
-async def test_handle_model_switch_unknown_model(config, mock_api):
-    mock_client = MagicMock()
-    mock_client.get_models = MagicMock(
-        return_value={
-            "current_model": "model-a",
-            "available_models": [{
-                "id": "model-a"
-            }, {
-                "id": "model-b"
-            }]
-        })
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.agent_clients[(None, "goose")] = mock_client
-    bridge.sessions["u1:root1"] = {
-        "id": "s1",
-        "linux_user": None,
-        "agent_name": "goose"
-    }
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!model invalid-model"
-    }
-    await bridge._handle_model_command(post, "!model invalid-model")
-
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "Unknown model `invalid-model`" in msg
-
-
-@pytest.mark.asyncio
-async def test_handle_model_permission_denied(config, mock_api):
-    config.allow_model_control = False
-    bridge = MattermostBridge(api=mock_api, config=config)
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!model new-model"
-    }
-    await bridge._handle_model_command(post, "!model new-model")
-
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "Permission denied: Model switching is disabled" in msg
-
-
-@pytest.mark.asyncio
-async def test_handle_model_query_locked_user(config, mock_api):
-    config.allow_model_control = False
-    config.goose_model = "fixed-model"
-    bridge = MattermostBridge(api=mock_api, config=config)
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!model"
-    }
-    await bridge._handle_model_command(post, "!model")
-
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "`fixed-model`" in msg
-    assert "locked by administrator" in msg
-
-
-@pytest.mark.asyncio
-async def test_handle_model_control_users_allowlist(config, mock_api):
-    config.allow_model_control = True
-    config.model_control_users = ["allowed_admin"]
-    mock_api.get_user = AsyncMock(return_value={"username": "normal_user"})
-    bridge = MattermostBridge(api=mock_api, config=config)
-
-    post = {
-        "user_id": "normal_user_id",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!model new-model"
-    }
-    await bridge._handle_model_command(post, "!model new-model")
-
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "Permission denied: Model switching is disabled" in msg
-
-
-@pytest.mark.asyncio
-async def test_handle_agent_command_resets_model_name(config, mock_api,
-                                                      mock_goose_client):
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=lambda u: mock_goose_client)
-    bridge.config.agents = {
-        "goose": {
-            "command": ["goose", "acp"]
-        },
-        "hermes": {
-            "command": ["hermes", "acp"]
-        }
-    }
-    bridge.sessions["u1:root1"] = {
-        "id": "s1",
-        "linux_user": "l1",
-        "agent_name": "goose",
-        "model_name": "claude-3-5-sonnet"
-    }
-    bridge.agent_clients[("l1", "goose")] = mock_goose_client
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!agent hermes"
-    }
-    await bridge._handle_agent_command(post, "!agent hermes")
-
-    assert bridge.sessions["u1:root1"]["agent_name"] == "hermes"
-    assert bridge.sessions["u1:root1"]["model_name"] is None
-
-
-@pytest.mark.asyncio
-async def test_handle_message_applies_staged_model(config, mock_api,
-                                                   mock_goose_client):
-    mock_goose_client.set_model = AsyncMock(return_value={})
-    mock_goose_client.create_session = AsyncMock(return_value="s100")
-    factory = lambda u, a=None: mock_goose_client
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=factory)
-    bridge.bot_mention = "@bot"
-    bridge.config.approved_users = []
-    bridge.sessions["u1:p1"] = {
-        "id": None,
-        "linux_user": "l1",
-        "agent_name": "goose",
-        "model_name": "staged-model-xyz",
-        "processed_count": 0,
-        "had_catchup_hint": False
-    }
-
-    post = {
-        "id": "p1",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "@bot hello",
-        "create_at": 1000
-    }
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"u1": "l1"}):
-        await bridge._process_post(post, {"c1": {"type": "D"}})
-        await wait_for_bridge(bridge)
-
-    mock_goose_client.set_model.assert_awaited_once_with(
-        "s100", "staged-model-xyz")
-    assert bridge.sessions["u1:p1"]["model_name"] == "staged-model-xyz"
-
-
-@pytest.mark.asyncio
-async def test_handle_message_retry_preserves_model(config, mock_api,
-                                                    mock_goose_client):
-    mock_goose_client.set_model = AsyncMock(return_value={})
-    sessions_created = ["s_initial", "s_retry"]
-    mock_goose_client.create_session = AsyncMock(side_effect=sessions_created)
-
-    call_count = 0
-
-    async def mock_prompt_fail_then_succeed(sid, msg):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise RuntimeError("Connection lost")
-        yield {"type": "final", "text": "ok"}
-
-    mock_goose_client.prompt.side_effect = mock_prompt_fail_then_succeed
-
-    factory = lambda u, a=None: mock_goose_client
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=factory)
-    bridge.bot_mention = "@bot"
-    bridge.config.approved_users = []
-    bridge.sessions["u1:p1"] = {
-        "id": None,
-        "linux_user": "l1",
-        "agent_name": "goose",
-        "model_name": "persisted-model",
-        "processed_count": 0,
-        "had_catchup_hint": False
-    }
-
-    post = {
-        "id": "p1",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "@bot hello",
-        "create_at": 1000
-    }
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"u1": "l1"}):
-        await bridge._process_post(post, {"c1": {"type": "D"}})
-        await wait_for_bridge(bridge)
-
-    # Initial session created and set_model called, then retry session created and set_model called
-    assert mock_goose_client.set_model.await_count == 2
-    mock_goose_client.set_model.assert_any_await("s_initial", "persisted-model")
-    mock_goose_client.set_model.assert_any_await("s_retry", "persisted-model")
-    assert bridge.sessions["u1:p1"]["model_name"] == "persisted-model"
-
-
-@pytest.mark.asyncio
-async def test_handle_message_staged_model_failure_notifies_and_resets(
-        config, mock_api, mock_goose_client):
-    mock_goose_client.set_model = AsyncMock(
-        side_effect=RuntimeError("Model not found"))
-    mock_goose_client.create_session = AsyncMock(return_value="s101")
-    factory = lambda u, a=None: mock_goose_client
-    bridge = MattermostBridge(api=mock_api,
-                              config=config,
-                              goose_client_factory=factory)
-    bridge.bot_mention = "@bot"
-    bridge.config.approved_users = []
-    bridge.sessions["u1:p1"] = {
-        "id": None,
-        "linux_user": "l1",
-        "agent_name": "goose",
-        "model_name": "bad-model",
-        "processed_count": 0,
-        "had_catchup_hint": False
-    }
-
-    post = {
-        "id": "p1",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "@bot hello",
-        "create_at": 1000
-    }
-    with patch('mattermost_bridge.load_user_mapping',
-               return_value={"u1": "l1"}):
-        await bridge._process_post(post, {"c1": {"type": "D"}})
-        await wait_for_bridge(bridge)
-
-    assert bridge.sessions["u1:p1"]["model_name"] is None
-    error_posts = [
-        call.args[1]
-        for call in mock_api.create_post.call_args_list
-        if "Failed to apply staged model `bad-model`" in call.args[1]
-    ]
-    assert len(error_posts) == 1
-
-
-@pytest.mark.asyncio
-async def test_handle_model_query_no_session_does_not_leak_cross_thread_model(
-        config, mock_api):
-    config.goose_model = "claude-3-5-sonnet"
-    mock_client = MagicMock()
-    # Another thread/session left its model in last_known_models
-    mock_client.get_models = MagicMock(
-        return_value={
-            "current_model": "other-session-model",
-            "available_models": ["model-a", "model-b"]
-        })
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.agent_clients[(None, "goose")] = mock_client
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!model"
-    }
-    await bridge._handle_model_command(post, "!model")
-
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "`claude-3-5-sonnet`" in msg
-    assert "default from environment" in msg
-    assert "other-session-model" not in msg
-
-
-@pytest.mark.asyncio
-async def test_models_with_argument_treated_as_query(config, mock_api):
-    mock_client = MagicMock()
-    mock_client.get_models = MagicMock(
-        return_value={
-            "current_model": "active-model",
-            "available_models": ["active-model", "other-model"]
-        })
-    mock_client.set_model = AsyncMock()
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.agent_clients[(None, "goose")] = mock_client
-    bridge.sessions["u1:root1"] = {
-        "id": "s1",
-        "linux_user": None,
-        "agent_name": "goose"
-    }
-
-    post = {
-        "user_id": "u1",
-        "channel_id": "c1",
-        "root_id": "root1",
-        "message": "!models some_arg"
-    }
-    await bridge._handle_model_command(post, "!models some_arg")
-
-    mock_client.set_model.assert_not_called()
-    assert mock_api.create_post.called
-    msg = mock_api.create_post.call_args[0][1]
-    assert "Model Status" in msg
-
-
-@pytest.mark.asyncio
-async def test_process_post_model_unapproved_user_blocked(config, mock_api):
-    config.approved_users = ["allowed_user"]
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.bot_mention = "@bot"
-    bridge._handle_model_command = AsyncMock()
-
-    post = {
-        "id": "p1",
-        "user_id": "unapproved_u",
-        "channel_id": "c1",
-        "message": "!model gpt-4o",
-        "create_at": 1000
-    }
-    mock_api.get_user = AsyncMock(return_value={"username": "unapproved_user"})
-
-    await bridge._process_post(post, {"c1": {"type": "D"}})
-
-    bridge._handle_model_command.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_process_post_modeling_word_not_intercepted(config, mock_api):
-    bridge = MattermostBridge(api=mock_api, config=config)
-    bridge.bot_mention = "@bot"
-    bridge._handle_model_command = AsyncMock()
-
-    post = {
-        "id": "p1",
-        "user_id": "u1",
-        "channel_id": "c1",
-        "message": "!modeling something",
-        "create_at": 1000
-    }
-
-    await bridge._process_post(post, {"c1": {"type": "O"}})
-
-    bridge._handle_model_command.assert_not_called()
+async def test_run_keyboard_interrupt_cleans_up_even_if_termination_errors(
+    config,
+    mock_api,
+):
+    client = MagicMock()
+    client.terminate = AsyncMock(side_effect=RuntimeError("terminate error"))
+
+    bridge = MattermostBridge(
+        api=mock_api,
+        config=config,
+        agent_client_factory=lambda u, a: client,
+    )
+    bridge.agent_pool.get_or_create(None, "goose")
+    mock_api.get_channel_posts = AsyncMock(side_effect=KeyboardInterrupt)
+
+    bg_task = asyncio.create_task(asyncio.sleep(10.0))
+    bridge.background_tasks.add(bg_task)
+
+    await bridge.run()
+
+    assert bg_task.cancelled()
+    client.terminate.assert_awaited_once()

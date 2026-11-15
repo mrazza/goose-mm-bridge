@@ -1,5 +1,8 @@
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
+from unittest.mock import patch
+
 import pytest
 
 from bridge import run_bridge
@@ -37,7 +40,9 @@ async def test_run_bridge_mcp_enabled():
                     with patch.object(default_config, "mcp_port", 5000):
                         await run_bridge()
 
-                        mock_bridge_cls.assert_called_once_with(config=default_config)
+                        mock_bridge_cls.assert_called_once_with(
+                            config=default_config)
                         mock_bridge.run.assert_called_once()
-                        mock_mcp_cls.assert_called_once_with(mock_bridge)
+                        mock_mcp_cls.assert_called_once_with(
+                            mock_bridge.api, mock_bridge.channel_cache)
                         mock_mcp.run.assert_called_once_with("localhost", 5000)

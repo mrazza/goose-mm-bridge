@@ -13,18 +13,15 @@ disable=
     protected-access,
     too-few-public-methods,
     too-many-arguments,
+    too-many-positional-arguments,
     too-many-branches,
     too-many-instance-attributes,
     too-many-locals,
     too-many-public-methods,
-    too-many-statements,
-    # Handled by YAPF
-    bad-continuation,
-    bad-whitespace
+    too-many-statements
 
 [REPORTS]
 output-format=text
-files-output=no
 reports=no
 evaluation=10.0 - ((float(5 * error + warning + refactor + convention) / statement) * 10)
 

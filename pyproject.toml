@@ -1,3 +1,27 @@
+[project]
+name = "goose-mm-bridge"
+version = "0.1.0"
+description = "Mattermost bridge to Goose and Hermes via ACP"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "python-dotenv",
+    "mcp<2",
+    "uvicorn",
+    "starlette",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-mock",
+    "hypothesis",
+    "yapf",
+    "pylint",
+    "isort",
+]
+
 [tool.isort]
 profile = "google"
 line_length = 80

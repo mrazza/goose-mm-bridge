@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from config import Config
 from acp_client import ACPClient
+from config import Config
 
 
 @pytest.fixture
