@@ -4,6 +4,10 @@
 			"goose",
 			"acp"
 		],
+		"extensions_flag": "--with-builtin",
+		"model_env": [
+			"GOOSE_MODEL"
+		],
 		"forward_env": [
 			"GOOSE_PROVIDER",
 			"GOOSE_MODEL",
@@ -18,6 +22,10 @@
 			"bash",
 			"-c",
 			"mkdir -p ~/.hermes && (grep -Ev '^(GOOGLE_API_KEY|GEMINI_API_KEY)=' ~/.hermes/.env 2>/dev/null || true; [ -n \"$GOOGLE_API_KEY\" ] && echo \"GOOGLE_API_KEY=$GOOGLE_API_KEY\"; [ -n \"$GEMINI_API_KEY\" ] && echo \"GEMINI_API_KEY=$GEMINI_API_KEY\") > ~/.hermes/.env.tmp && mv ~/.hermes/.env.tmp ~/.hermes/.env && exec hermes acp"
+		],
+		"model_env": [
+			"HERMES_MODEL",
+			"HERMES_INFERENCE_MODEL"
 		],
 		"forward_env": [
 			"HERMES_PROVIDER",
@@ -39,6 +47,10 @@
 		"command": [
 			"coma",
 			"--acp"
+		],
+		"model_env": [
+			"COMA_MODEL",
+			"MODEL"
 		],
 		"forward_env": [
 			"GOOGLE_API_KEY"

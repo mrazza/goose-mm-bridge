@@ -87,7 +87,7 @@ AMAZON_AWS_ACCESS_KEY_ID=...
 
 - [Goose](https://github.com/block/goose) and/or [Hermes](https://github.com/NousResearch/Hermes) installed and available in your PATH.
 - A Mattermost Bot account and Personal Access Token.
-- Python 3.8+
+- Python 3.10+
 - (Optional) `sudo` access on the host for OS-native isolation.
 
 ## 📦 Installation
@@ -145,6 +145,8 @@ The bridge is configured via environment variables in the `.env` file:
 | `MATTERMOST_TOKEN` | Your Mattermost Bot Personal Access Token. | |
 | `MATTERMOST_SCHEME` | The protocol used by Mattermost (`http` or `https`). | `https` |
 | `MATTERMOST_PORT` | The port number Mattermost is listening on. | `443` |
+| `MATTERMOST_SSL_VERIFY` | Verify TLS certificates when connecting to Mattermost over HTTPS. | `false` |
+| `MATTERMOST_HTTP_TIMEOUT` | Timeout in seconds for Mattermost HTTP API requests. | `30` |
 | `APPROVED_USERS` | A comma-separated list of usernames or user IDs authorized to use the bot. If empty, any user who can reach the bot can use it. | (None) |
 | `ADMIN_USERS` | A comma-separated list of usernames or user IDs authorized as administrators to run admin-only commands (e.g., `!impersonate`). | (None) |
 | `USER_MAPPING_FILE` | Path to the JSON configuration file for OS-level user isolation. | `user_mapping.json` |
@@ -183,20 +185,28 @@ The bridge is configured via environment variables in the `.env` file:
 
 ## 🎮 Commands
 
-The bridge supports specific commands that can be typed directly into the Mattermost chat:
+The bridge supports `!` commands typed directly in Mattermost chat.
 
-- **`!stop`**: Immediately cancels the active prompt in the current thread.
+- **Where bare `!` commands work**: In direct messages (DMs) and inside active or staged bot threads, you can run commands without mentioning the bot (e.g., `!model`). In top-level public or private channel posts (outside an existing thread session), mention the bot first (e.g., `@goose !model`). Admin `!restart` always requires a DM or `@bot` mention.
+- **Permissions**: `!stop` and `!context` can be run by anyone. Other standard commands require `APPROVED_USERS` membership when configured. Admin commands require `ADMIN_USERS` membership.
+
+Available commands:
+
+- **`!help`**: Shows available commands and usage instructions (administrators also see admin commands).
+- **`!stop`**: Immediately cancels the active prompt in the current thread (available to anyone).
+- **`!context`**: Displays context window usage for the current thread session, if available (available to anyone).
 - **`!agents`**: Lists all available configured agents (e.g., `goose`, `hermes`), indicating which one is active in the current thread and which one is your persistent default.
 - **`!agent <name>`**: Switches the agent used for the current conversation thread to `<name>`. If `<name>` is omitted, shows the active agent for the current thread.
 - **`!agent-default <name>`**: Sets `<name>` as your persistent default agent for all new threads. If `<name>` is omitted, shows your current default agent.
 - **`!models` / `!model`**: Lists available models from the ACP agent and displays the currently active model for the thread.
 - **`!model <name>`**: Switches the active model for the current thread to `<name>` (or stages it for the next session if none is active). Permission can be controlled globally via `ALLOW_MODEL_CONTROL` / `MODEL_CONTROL_USERS` or per-user in `user_configs/<user>.env`.
-- **`!impersonate <username | user_id>`**: Allows administrators (configured in `ADMIN_USERS`) to operate as other users.
+- **`!impersonate <username | user_id>`**: *(Admin only)* Allows administrators (configured in `ADMIN_USERS`) to operate as other users.
   - To impersonate: `!impersonate @username` or `!impersonate user_id`.
   - All subsequent prompts will execute under the target user's context (including Linux user mappings, dynamic configuration overrides, and thread histories).
   - Prompts will be automatically prepended with `[Sender: @username]` so the agent is aware of who it is interacting with.
   - Control commands like `!stop` will route directly to the impersonated user's session.
   - To clear impersonation: `!impersonate clear`, `!impersonate off`, or `!impersonate stop`.
+- **`!restart`**: *(Admin only, DM or `@bot` mention)* Gracefully shuts down active sessions and exits so your service supervisor can restart the bridge.
 
 ## 🏃 Usage
 

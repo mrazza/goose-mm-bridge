@@ -7,8 +7,8 @@ from goose_simulator import MockProcess
 from goose_simulator import simulate_goose_behavior
 import pytest
 
-from config import Config
 from acp_client import ACPClient
+from config import Config
 from mattermost_bridge import MattermostBridge
 
 
@@ -90,10 +90,10 @@ async def test_bridge_integration_flow_with_goose_process(
     bridge = MattermostBridge(
         api=mock_api_base,
         config=base_config,
-        goose_client_factory=lambda u: ACPClient(u, config=base_config))
+        agent_client_factory=lambda u, a: ACPClient(u, config=base_config))
     bridge.last_since = 0
 
-    with patch('mattermost_bridge.load_user_mapping', return_value={"user_1": "linux_alice"}), \
+    with patch('user_store.load_user_mapping', return_value={"user_1": "linux_alice"}), \
          patch('asyncio.create_subprocess_exec', return_value=mock_process):
 
         simulator_task = asyncio.create_task(
@@ -106,7 +106,7 @@ async def test_bridge_integration_flow_with_goose_process(
             bridge_task.cancel()
             simulator_task.cancel()
 
-    assert "user_1:post_123" in bridge.sessions
+    assert "user_1:post_123" in bridge.sessions.sessions
 
 
 @pytest.mark.asyncio
@@ -131,7 +131,7 @@ async def test_bridge_multi_turn_catchup_flow(base_config, mock_api_base):
     mock_process = MockProcess()
     prompts_received = []
 
-    def goose_factory(user):
+    def agent_factory(user, agent="goose"):
         client = ACPClient(user, config=base_config)
         original_prompt = client.prompt
 
@@ -145,10 +145,10 @@ async def test_bridge_multi_turn_catchup_flow(base_config, mock_api_base):
 
     bridge = MattermostBridge(api=mock_api_base,
                               config=base_config,
-                              goose_client_factory=goose_factory)
+                              agent_client_factory=agent_factory)
     bridge.last_since = 0
 
-    with patch('mattermost_bridge.load_user_mapping', return_value={"user_1": "linux_alice"}), \
+    with patch('user_store.load_user_mapping', return_value={"user_1": "linux_alice"}), \
          patch('asyncio.create_subprocess_exec', return_value=mock_process):
 
         async def complex_simulator():
@@ -265,7 +265,7 @@ async def test_bridge_integration_ignore_empty_messages(base_config,
     mock_process = MockProcess()
     prompts_received = []
 
-    def goose_factory(user):
+    def agent_factory(user, agent="goose"):
         client = ACPClient(user, config=base_config)
         original_prompt = client.prompt
 
@@ -279,10 +279,10 @@ async def test_bridge_integration_ignore_empty_messages(base_config,
 
     bridge = MattermostBridge(api=mock_api_base,
                               config=base_config,
-                              goose_client_factory=goose_factory)
+                              agent_client_factory=agent_factory)
     bridge.last_since = 0
 
-    with patch('mattermost_bridge.load_user_mapping', return_value={"user_1": "linux_alice"}), \
+    with patch('user_store.load_user_mapping', return_value={"user_1": "linux_alice"}), \
          patch('asyncio.create_subprocess_exec', return_value=mock_process):
 
         async def simple_simulator():

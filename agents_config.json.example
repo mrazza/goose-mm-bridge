@@ -4,6 +4,10 @@
       "goose",
       "acp"
     ],
+    "extensions_flag": "--with-builtin",
+    "model_env": [
+      "GOOSE_MODEL"
+    ],
     "forward_env": [
       "GOOSE_PROVIDER",
       "GOOSE_MODEL",
@@ -17,6 +21,10 @@
     "command": [
       "hermes",
       "acp"
+    ],
+    "model_env": [
+      "HERMES_MODEL",
+      "HERMES_INFERENCE_MODEL"
     ],
     "forward_env": [
       "HERMES_PROVIDER",

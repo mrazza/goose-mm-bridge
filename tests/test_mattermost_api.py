@@ -1,4 +1,6 @@
-from unittest.mock import MagicMock, mock_open
+import ssl
+from unittest.mock import MagicMock
+from unittest.mock import mock_open
 from unittest.mock import patch
 import urllib.error
 
@@ -56,6 +58,7 @@ async def test_api_http_error(api):
         res = await api.get_me()
         assert res is None
 
+
 @pytest.mark.asyncio
 async def test_get_user(api):
     mock_response = MagicMock()
@@ -66,6 +69,7 @@ async def test_get_user(api):
         user = await api.get_user("u1")
         assert user["id"] == "u1"
         assert user["username"] == "user1"
+
 
 @pytest.mark.asyncio
 async def test_get_post(api):
@@ -78,6 +82,7 @@ async def test_get_post(api):
         assert post["id"] == "p1"
         assert post["message"] == "hello"
 
+
 @pytest.mark.asyncio
 async def test_get_file_info(api):
     mock_response = MagicMock()
@@ -89,6 +94,7 @@ async def test_get_file_info(api):
         assert info["id"] == "f1"
         assert info["name"] == "test.txt"
 
+
 @pytest.mark.asyncio
 async def test_download_file(api):
     mock_response = MagicMock()
@@ -98,6 +104,7 @@ async def test_download_file(api):
     with patch('urllib.request.urlopen', return_value=mock_response):
         data = await api.download_file("f1")
         assert data == b'raw file data'
+
 
 @pytest.mark.asyncio
 async def test_get_direct_channels(api):
@@ -110,6 +117,7 @@ async def test_get_direct_channels(api):
         assert len(channels) == 1
         assert channels[0]["id"] == "c1"
 
+
 @pytest.mark.asyncio
 async def test_get_my_teams(api):
     mock_response = MagicMock()
@@ -120,6 +128,7 @@ async def test_get_my_teams(api):
         teams = await api.get_my_teams()
         assert len(teams) == 1
         assert teams[0]["id"] == "t1"
+
 
 @pytest.mark.asyncio
 async def test_get_my_channels(api):
@@ -132,17 +141,20 @@ async def test_get_my_channels(api):
         assert len(channels) == 1
         assert channels[0]["id"] == "c1"
 
+
 @pytest.mark.asyncio
 async def test_get_channel_posts(api):
     mock_response = MagicMock()
     mock_response.read.return_value = b'{"posts": {"p1": {"id": "p1"}}}'
     mock_response.__enter__.return_value = mock_response
 
-    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+    with patch('urllib.request.urlopen',
+               return_value=mock_response) as mock_url:
         res = await api.get_channel_posts("c1", 1000)
         assert "p1" in res["posts"]
         args, _ = mock_url.call_args
         assert "since=1000" in args[0].get_full_url()
+
 
 @pytest.mark.asyncio
 async def test_get_thread(api):
@@ -150,13 +162,18 @@ async def test_get_thread(api):
     mock_response.read.return_value = b'{"posts": {"p1": {"id": "p1"}}}'
     mock_response.__enter__.return_value = mock_response
 
-    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
-        res = await api.get_thread("p1", per_page=10, from_create_at=500, direction="down")
+    with patch('urllib.request.urlopen',
+               return_value=mock_response) as mock_url:
+        res = await api.get_thread("p1",
+                                   per_page=10,
+                                   from_create_at=500,
+                                   direction="down")
         assert "p1" in res["posts"]
         url = mock_url.call_args[0][0].get_full_url()
         assert "perPage=10" in url
         assert "fromCreateAt=500" in url
         assert "direction=down" in url
+
 
 @pytest.mark.asyncio
 async def test_search_posts(api):
@@ -164,11 +181,13 @@ async def test_search_posts(api):
     mock_response.read.return_value = b'{"posts": {"p1": {"id": "p1"}}}'
     mock_response.__enter__.return_value = mock_response
 
-    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+    with patch('urllib.request.urlopen',
+               return_value=mock_response) as mock_url:
         res = await api.search_posts("t1", "query")
         assert "p1" in res["posts"]
         req = mock_url.call_args[0][0]
         assert req.get_method() == "POST"
+
 
 @pytest.mark.asyncio
 async def test_search_users(api):
@@ -176,11 +195,13 @@ async def test_search_users(api):
     mock_response.read.return_value = b'[{"id": "u1"}]'
     mock_response.__enter__.return_value = mock_response
 
-    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+    with patch('urllib.request.urlopen',
+               return_value=mock_response) as mock_url:
         res = await api.search_users("term")
         assert res[0]["id"] == "u1"
         req = mock_url.call_args[0][0]
         assert req.get_method() == "POST"
+
 
 @pytest.mark.asyncio
 async def test_create_direct_channel(api):
@@ -188,11 +209,13 @@ async def test_create_direct_channel(api):
     mock_response.read.return_value = b'{"id": "c1"}'
     mock_response.__enter__.return_value = mock_response
 
-    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+    with patch('urllib.request.urlopen',
+               return_value=mock_response) as mock_url:
         res = await api.create_direct_channel(["u1", "u2"])
         assert res["id"] == "c1"
         req = mock_url.call_args[0][0]
         assert req.get_method() == "POST"
+
 
 @pytest.mark.asyncio
 async def test_update_post(api):
@@ -200,11 +223,13 @@ async def test_update_post(api):
     mock_response.read.return_value = b'{"id": "p1", "message": "updated"}'
     mock_response.__enter__.return_value = mock_response
 
-    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+    with patch('urllib.request.urlopen',
+               return_value=mock_response) as mock_url:
         res = await api.update_post("p1", "updated")
         assert res["message"] == "updated"
         req = mock_url.call_args[0][0]
         assert req.get_method() == "PUT"
+
 
 @pytest.mark.asyncio
 async def test_upload_file(api):
@@ -212,15 +237,20 @@ async def test_upload_file(api):
     mock_response.read.return_value = b'{"file_infos": [{"id": "f1"}]}'
     mock_response.__enter__.return_value = mock_response
 
-    with patch('urllib.request.urlopen', return_value=mock_response) as mock_url:
+    with patch('urllib.request.urlopen',
+               return_value=mock_response) as mock_url:
         with patch('os.path.exists', return_value=True):
-            with patch('mimetypes.guess_type', return_value=('text/plain', None)):
-                with patch('builtins.open', mock_open(read_data=b"file content")):
+            with patch('mimetypes.guess_type',
+                       return_value=('text/plain', None)):
+                with patch('builtins.open',
+                           mock_open(read_data=b"file content")):
                     res = await api.upload_file("c1", "test.txt")
                     assert res["file_infos"][0]["id"] == "f1"
                     req = mock_url.call_args[0][0]
                     assert req.get_method() == "POST"
-                    assert "multipart/form-data" in req.get_header("Content-type")
+                    assert "multipart/form-data" in req.get_header(
+                        "Content-type")
+
 
 @pytest.mark.asyncio
 async def test_api_general_exception(api):
@@ -229,12 +259,14 @@ async def test_api_general_exception(api):
         res = await api.get_me()
         assert res is None
 
+
 @pytest.mark.asyncio
 async def test_api_raw_exception(api):
     with patch('urllib.request.urlopen') as mock_url:
         mock_url.side_effect = Exception("Generic connection failure")
         res = await api.download_file("f1")
         assert res is None
+
 
 @pytest.mark.asyncio
 async def test_create_post_with_file_ids_and_props(api):
@@ -243,14 +275,13 @@ async def test_create_post_with_file_ids_and_props(api):
     mock_response.__enter__.return_value = mock_response
 
     with patch('urllib.request.urlopen', return_value=mock_response):
-        post = await api.create_post(
-            "channel_id",
-            "hello message",
-            root_id="root_id",
-            file_ids=["f1", "f2"],
-            props={"from_bot": "true"}
-        )
+        post = await api.create_post("channel_id",
+                                     "hello message",
+                                     root_id="root_id",
+                                     file_ids=["f1", "f2"],
+                                     props={"from_bot": "true"})
         assert post["id"] == "post_id"
+
 
 @pytest.mark.asyncio
 async def test_update_post_with_props(api):
@@ -262,18 +293,54 @@ async def test_update_post_with_props(api):
         res = await api.update_post("p1", "updated", props={"edited": "true"})
         assert res["message"] == "updated"
 
+
 @pytest.mark.asyncio
 async def test_upload_file_non_existent(api):
     with patch('os.path.exists', return_value=False):
         res = await api.upload_file("c1", "nonexistent.txt")
         assert res is None
 
+
 @pytest.mark.asyncio
 async def test_upload_file_exception(api):
     with patch('os.path.exists', return_value=True):
         with patch('mimetypes.guess_type', return_value=('text/plain', None)):
             with patch('builtins.open', mock_open(read_data=b"file content")):
-                with patch('urllib.request.urlopen', side_effect=Exception("Upload limit exceeded")):
+                with patch('urllib.request.urlopen',
+                           side_effect=Exception("Upload limit exceeded")):
                     res = await api.upload_file("c1", "test.txt")
                     assert res is None
 
+
+def test_ssl_verify_setting():
+    insecure = MattermostAPI(config=Config(mattermost_url="example.com",
+                                           mattermost_token="token",
+                                           mattermost_ssl_verify=False))
+    assert insecure.ssl_context.check_hostname is False
+    assert insecure.ssl_context.verify_mode == ssl.CERT_NONE
+
+    secure = MattermostAPI(config=Config(mattermost_url="example.com",
+                                         mattermost_token="token",
+                                         mattermost_ssl_verify=True))
+    assert secure.ssl_context.check_hostname is True
+    assert secure.ssl_context.verify_mode == ssl.CERT_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_request_passes_configured_timeout():
+    api = MattermostAPI(config=Config(mattermost_url="example.com",
+                                      mattermost_token="token",
+                                      mattermost_http_timeout=12))
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"id": "bot_id"}'
+    mock_response.__enter__.return_value = mock_response
+
+    with patch('urllib.request.urlopen',
+               return_value=mock_response) as mock_url:
+        await api.get_me()
+        assert mock_url.call_args.kwargs["timeout"] == 12
+        assert mock_url.call_args.kwargs["context"] is api.ssl_context
+
+        await api.download_file("f1")
+        assert mock_url.call_args.kwargs["timeout"] == 12
+        assert mock_url.call_args.kwargs["context"] is api.ssl_context

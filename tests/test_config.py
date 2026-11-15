@@ -149,6 +149,7 @@ def test_config_hermes_env_vars():
 
 def test_config_thinking_trace_env_vars():
     import importlib
+
     import config
     env = {"THINKING_TRACE": "false", "THINKING_TRACE_SIMPLIFIED": "false"}
     with patch.dict(os.environ, env):
@@ -259,3 +260,51 @@ def test_load_user_config_empty_model_control_users(tmp_path):
     loaded = load_user_config("user", config)
 
     assert loaded.model_control_users is None
+
+
+def test_config_http_and_ssl_defaults_and_runtime_env():
+    defaults = Config(mattermost_url="example.com", mattermost_token="tok")
+    assert defaults.mattermost_ssl_verify is False
+    assert defaults.mattermost_http_timeout == 30
+
+    # Config() resolves env vars dynamically at instantiation, not import time
+    with patch.dict(
+            os.environ, {
+                "MATTERMOST_SSL_VERIFY": "true",
+                "MATTERMOST_HTTP_TIMEOUT": "15",
+                "POLL_INTERVAL": "7",
+            }):
+        dynamic = Config()
+        assert dynamic.mattermost_ssl_verify is True
+        assert dynamic.mattermost_http_timeout == 15
+        assert dynamic.poll_interval == 7
+
+
+def test_config_get_agent_default_model():
+    config = Config(
+        goose_model="claude-3-5-sonnet",
+        hermes_model=None,
+        hermes_inference_model="nous/hermes-3",
+        agents={
+            "goose": {
+                "command": "goose",
+                "model_env": ["GOOSE_MODEL"]
+            },
+            "hermes": {
+                "command": "hermes",
+                "model_env": ["HERMES_MODEL", "HERMES_INFERENCE_MODEL"]
+            },
+            "custom": {
+                "command": "custom-cli",
+                "env": {
+                    "CUSTOM_MODEL": "custom-1"
+                },
+            },
+        },
+    )
+    assert config.get_agent_default_model("goose") == "claude-3-5-sonnet"
+    assert config.get_agent_default_model("hermes") == "nous/hermes-3"
+    assert config.get_agent_default_model("custom") == "custom-1"
+
+    config.user_env_vars = {"HERMES_MODEL": "user-hermes-override"}
+    assert config.get_agent_default_model("hermes") == "user-hermes-override"

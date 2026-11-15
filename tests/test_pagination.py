@@ -38,20 +38,19 @@ async def test_api_get_thread_pagination(api):
 
 
 @pytest.fixture
-def mock_bridge():
-    bridge = MagicMock()
-    bridge.api = MagicMock()
-    bridge.api.get_user = AsyncMock(return_value={"username": "testuser"})
-    return bridge
+def mock_api():
+    api = MagicMock()
+    api.get_user = AsyncMock(return_value={"username": "testuser"})
+    return api
 
 
 @pytest.fixture
-def mcp_server(mock_bridge):
-    return MattermostMCPServer(mock_bridge)
+def mcp_server(mock_api):
+    return MattermostMCPServer(mock_api)
 
 
 @pytest.mark.asyncio
-async def test_mcp_get_thread_context_with_limit(mcp_server, mock_bridge):
+async def test_mcp_get_thread_context_with_limit(mcp_server, mock_api):
     # Mock a thread with 10 posts
     posts = {
         f"p{i}": {
@@ -62,7 +61,7 @@ async def test_mcp_get_thread_context_with_limit(mcp_server, mock_bridge):
     }
     order = [f"p{i}" for i in range(10)]
 
-    mock_bridge.api.get_thread = AsyncMock(return_value={
+    mock_api.get_thread = AsyncMock(return_value={
         "posts": posts,
         "order": order,
         "has_next": False
@@ -92,7 +91,7 @@ async def test_mcp_get_thread_context_with_limit(mcp_server, mock_bridge):
 
 
 @pytest.mark.asyncio
-async def test_mcp_get_thread_context_all_pages(mcp_server, mock_bridge):
+async def test_mcp_get_thread_context_all_pages(mcp_server, mock_api):
     # Mock multiple pages (direction="up")
     page1 = {
         "posts": {
@@ -117,7 +116,7 @@ async def test_mcp_get_thread_context_all_pages(mcp_server, mock_bridge):
         "has_next": False
     }
 
-    mock_bridge.api.get_thread = AsyncMock(side_effect=[page1, page2])
+    mock_api.get_thread = AsyncMock(side_effect=[page1, page2])
 
     result_list, _ = await mcp_server.mcp.call_tool("get_thread_context", {
         "root_id": "r1",
@@ -126,18 +125,18 @@ async def test_mcp_get_thread_context_all_pages(mcp_server, mock_bridge):
     result = result_list[0].text
 
     # With limit=0, it should only call once with per_page=0
-    assert mock_bridge.api.get_thread.call_count == 2
+    assert mock_api.get_thread.call_count == 2
     assert result.count("[Sender: @testuser]") == 120
 
     # Verify call arguments
-    mock_bridge.api.get_thread.assert_any_call("r1",
-                                               per_page=0,
-                                               from_create_at=0,
-                                               direction="up")
-    mock_bridge.api.get_thread.assert_any_call("r1",
-                                               per_page=0,
-                                               from_create_at=59,
-                                               direction="up")
+    mock_api.get_thread.assert_any_call("r1",
+                                        per_page=0,
+                                        from_create_at=0,
+                                        direction="up")
+    mock_api.get_thread.assert_any_call("r1",
+                                        per_page=0,
+                                        from_create_at=59,
+                                        direction="up")
 
 
 @pytest.mark.asyncio
@@ -165,9 +164,9 @@ async def test_api_search_posts_pagination(api):
 
 
 @pytest.mark.asyncio
-async def test_mcp_search_messages_pagination(mcp_server, mock_bridge):
-    mock_bridge.api.get_my_teams = AsyncMock(return_value=[{"id": "t1"}])
-    mock_bridge.api.search_posts = AsyncMock(
+async def test_mcp_search_messages_pagination(mcp_server, mock_api):
+    mock_api.get_my_teams = AsyncMock(return_value=[{"id": "t1"}])
+    mock_api.search_posts = AsyncMock(
         return_value={
             "posts": {
                 "p1": {
@@ -186,7 +185,7 @@ async def test_mcp_search_messages_pagination(mcp_server, mock_bridge):
     })
 
     assert "found it" in result_list[0].text
-    mock_bridge.api.search_posts.assert_called_once_with("t1",
-                                                         "query",
-                                                         page=1,
-                                                         per_page=5)
+    mock_api.search_posts.assert_called_once_with("t1",
+                                                  "query",
+                                                  page=1,
+                                                  per_page=5)

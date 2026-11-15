@@ -66,7 +66,8 @@ def test_load_prewarm_config(tmp_path):
     }
 
     # With prewarm_users shorthand override/supplement
-    loaded_with_env = load_prewarm_config(str(config_file), "user1:goose,user4:hermes+default,user5")
+    loaded_with_env = load_prewarm_config(
+        str(config_file), "user1:goose,user4:hermes+default,user5")
     assert "hermes" in loaded_with_env["user1"]
     assert "goose" in loaded_with_env["user1"]
     assert loaded_with_env["user4"] == ["hermes", "default"]
@@ -76,7 +77,9 @@ def test_load_prewarm_config(tmp_path):
     rel_file = tmp_path / "rel_prewarm.json"
     rel_file.write_text('{"rel_user": ["hermes"]}')
     with patch("config.project_root", str(tmp_path)):
-        assert load_prewarm_config("rel_prewarm.json") == {"rel_user": ["hermes"]}
+        assert load_prewarm_config("rel_prewarm.json") == {
+            "rel_user": ["hermes"]
+        }
 
     # Invalid JSON
     invalid_file = tmp_path / "invalid.json"
