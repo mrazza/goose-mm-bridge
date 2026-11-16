@@ -40,9 +40,8 @@ def _load_prewarm_file(config_file: str) -> dict:
 
     path = config_file
     if not os.path.isabs(path):
-        from config import \
-            project_root  # pylint: disable=import-outside-toplevel
-        path = os.path.join(project_root, path)
+        import config  # pylint: disable=import-outside-toplevel
+        path = os.path.join(config.project_root, path)
     if not os.path.exists(path):
         return result
 
